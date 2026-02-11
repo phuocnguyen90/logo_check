@@ -1,0 +1,31 @@
+# Core ML
+torch>=2.0.0
+torchvision
+efficientnet-pytorch
+onnx
+onnxruntime-gpu
+onnxconverter-common
+
+# Image Processing
+opencv-python-headless
+pillow
+pytesseract
+
+# Data & Math
+numpy
+pandas
+scipy
+scikit-learn
+joblib
+faiss-gpu
+
+# API & Server
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Utilities
+loguru
+tqdm
+pydantic
+pydantic-settings
