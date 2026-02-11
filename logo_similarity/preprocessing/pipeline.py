@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 from functools import lru_cache
 import hashlib
+from pathlib import Path
 
 from .text_detector import TextDetector
 from .text_masker import TextMasker
