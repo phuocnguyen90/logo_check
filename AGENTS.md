@@ -2,10 +2,11 @@
 
 ## Project Overview
 
-The L3D project is a trademark logo dataset containing ~770,000 images from EUIPO TMView (1996-2020). The codebase serves two purposes:
+The L3D project is a trademark logo dataset containing ~770,000 images from EUIPO TMView (1996-2020). The codebase serves three purposes:
 
-1. **Dataset Building Pipeline** — Scripts to download, process, and clean trademark data from EUIPO's FTP server
-2. **Logo Similarity Detection Research** — Baseline implementations and implementation plans for visual trademark similarity search
+1. **Dataset Building Pipeline** — Scripts to download, process, and clean trademark data (legacy, moved to `legacy/`)
+2. **Logo Similarity Detection** — A 2-stage pipeline for visual trademark similarity search (active development)
+3. **Baseline Models** — DCGAN generation, GPT-2 generation, NASNet classification (moved to `legacy/baselines/`)
 
 **Website:** https://lhf-labs.github.io/tm-dataset  
 **Dataset:** https://doi.org/10.5281/zenodo.5771006  
@@ -17,20 +18,23 @@ The L3D project is a trademark logo dataset containing ~770,000 images from EUIP
 
 ### Core Technologies
 - **Python**: 3.8 or greater (required per instructions.md)
-- **Primary Framework**: TensorFlow (for existing baselines)
-- **Planned Framework**: PyTorch (for logo similarity detection — implementation phase)
-- **Image Processing**: PIL/Pillow, ImageMagick (external tool)
-- **XML Parsing**: xmltodict
+- **Primary Framework**: PyTorch (for logo similarity detection — active development)
+- **Legacy Framework**: TensorFlow (for baselines in `legacy/`)
+- **Image Processing**: PIL/Pillow, OpenCV, ImageMagick (external tool)
+- **OCR**: Tesseract (pytesseract)
+- **Vector Search**: FAISS
+- **Logging**: loguru
 - **Progress Bars**: tqdm
 
 ### External Dependencies
 - **ImageMagick**: Required for image normalization (format conversion, resizing to 256x256)
-- **Tesseract OCR**: Planned for text detection in the logo similarity pipeline
+- **Tesseract OCR**: Used for text detection in the logo similarity pipeline
 - **Dataset Source**: KaggleHub (`konradb/ziilogos`) or EUIPO FTP server
 
 ### Environment
 - **Recommended Environment**: `torch12` conda/mamba environment with CUDA 12 preinstalled
-- **Hardware**: Developed with RTX 3060 (12GB VRAM) — critical constraint for training
+- **Hardware**: Developed with RTX 3060 (12GB VRAM) — **critical constraint for training**
+- **System RAM**: 32GB
 - **Dataset Location**: `~/.cache/kagglehub/datasets/konradb/ziilogos/versions/1/L3D dataset/`
 
 ---
@@ -39,21 +43,32 @@ The L3D project is a trademark logo dataset containing ~770,000 images from EUIP
 
 ```
 .
-├── a_download_data.py           # Download dataset from EUIPO FTP
-├── b_build_dataset_multiproc.py # Extract and process ZIP files (multiprocessing)
-├── c_dataset_size_stats.py      # Compute image size statistics
-├── d_filter_dataset.py          # Remove small/outlier images (<20px)
-├── e_fix_images.sh              # ImageMagick batch processing script
-├── f_fix_json.py                # Fix JSON metadata, verify images
-├── g_clean_images.py            # Remove orphaned image files
-├── h_statistics.py              # Generate analysis plots (by year, vienna codes)
-├── i_statistics.py              # Generate sunburst visualization data
-├── z_vienna_codes.py            # Normalize Vienna code categories
-├── kaggle_download.py           # Alternative: download from Kaggle
-├── baselines/                   # Three baseline implementations
-│   ├── tm_basic_generation/     # DCGAN for logo generation
-│   ├── tm_generation/             # GPT-2 based text/logo generation (fairseq)
-│   └── tm_multi_classification/ # NASNet-based Vienna code classification
+├── logo_similarity/             # Active development: Logo similarity detection
+│   ├── api/                     # FastAPI production endpoints
+│   ├── config/                  # Configuration files
+│   ├── embeddings/              # EfficientNet embedder, PCA, ONNX export
+│   ├── preprocessing/           # Text detection, masking, normalization
+│   ├── retrieval/               # Vector store (FAISS), search interface
+│   ├── reranking/               # Spatial feature matching, composite scoring
+│   ├── text/                    # Text extraction, phonetic similarity (ALINE)
+│   ├── training/                # MoCo v3 contrastive learning
+│   └── utils/                   # Logging, metrics, data utilities
+├── legacy/                      # Legacy dataset building scripts
+│   ├── a_download_data.py       # Download dataset from EUIPO FTP
+│   ├── b_build_dataset_multiproc.py
+│   ├── c_dataset_size_stats.py
+│   ├── d_filter_dataset.py
+│   ├── e_fix_images.sh
+│   ├── f_fix_json.py
+│   ├── g_clean_images.py
+│   ├── h_statistics.py
+│   ├── i_statistics.py
+│   ├── z_vienna_codes.py
+│   ├── kaggle_download.py
+│   └── baselines/               # Three baseline implementations
+│       ├── tm_basic_generation/ # DCGAN for logo generation
+│       ├── tm_generation/       # GPT-2 based text/logo generation (fairseq)
+│       └── tm_multi_classification/ # NASNet-based Vienna code classification
 ├── analysis/                    # Output directory for statistics plots
 ├── *.md                         # Documentation and implementation plans
 └── .claude/                     # Claude-specific files
@@ -63,11 +78,29 @@ The L3D project is a trademark logo dataset containing ~770,000 images from EUIP
 
 ## Build/Run Instructions
 
-### Dataset Building Pipeline (Run in Order)
+### Logo Similarity Detection System (Active Development)
+
+```bash
+# Activate environment
+mamba activate torch12
+
+# Phase 2: Build embedding index (~14 hours, resumable)
+python scripts/03_build_index.py --batch-size 64 --chunk-size 10000
+
+# Phase 4: Train with MoCo v3 (primary approach)
+python scripts/04_train_model_moco.py --batch-size 64 --queue-size 65536
+
+# Phase 6: Export to FP16 ONNX
+python scripts/05_export_onnx.py --fp16
+```
+
+### Legacy Dataset Building Pipeline (in `legacy/`)
 
 The dataset building scripts (prefixes a-g) must be run sequentially:
 
 ```bash
+cd legacy
+
 # 1. Download from EUIPO FTP (~53GB, 1996-2020 data)
 python a_download_data.py
 
@@ -98,29 +131,65 @@ python g_clean_images.py
 
 ```bash
 # From Kaggle (recommended for faster setup)
-python kaggle_download.py
+python legacy/kaggle_download.py
 
 # Or manually from Zenodo: https://doi.org/10.5281/zenodo.5771006
 ```
 
-### Running Baselines
+### Running Legacy Baselines
 
 Each baseline is self-contained in its subdirectory:
 
 ```bash
 # DCGAN for logo generation
-cd baselines/tm_basic_generation
+cd legacy/baselines/tm_basic_generation
 python main.py
 
 # Vienna code classification
-cd baselines/tm_multi_classification
+cd legacy/baselines/tm_multi_classification
 python main.py
 
 # GPT-2 generation (requires fairseq installation)
-cd baselines/tm_generation
+cd legacy/baselines/tm_generation
 bash a_install.sh
 bash b_train.sh
 ```
+
+---
+
+## Logo Similarity Detection Architecture (2-Stage Pipeline)
+
+```
+Input Logo → Preprocess (OCR + mask text) → Stage 1: ANN Retrieve Top-1000 → Stage 2: Re-rank → Results
+```
+
+### Key Design Decisions (v2)
+
+| Decision | Rationale |
+|----------|-----------|
+| **MoCo v3** over InfoNCE | True large-batch contrastive (65K negatives) with small actual batch (64) |
+| **On-the-fly preprocessing** | Save ~200GB disk (no .npz storage), LRU cache for repeated access |
+| **Mixed precision (AMP)** | 40% VRAM reduction, 30% speedup |
+| **Atomic checkpoints** | Write to `.tmp` then rename (no corrupt checkpoints) |
+| **Structured logging (loguru)** | Better debugging than `print()` |
+
+### Hardware Constraints (RTX 3060 12GB)
+
+| Setting | Value | VRAM Usage |
+|---------|-------|------------|
+| Batch size | 64 | ~2GB (with AMP) |
+| Queue size | 65,536 | ~1GB (CPU) |
+| Mixed precision | True | -40% vs FP32 |
+| Index building batch | 64 | ~2GB |
+
+### Why MoCo v3?
+
+Gradient accumulation does NOT give large-batch contrastive quality for InfoNCE. Each micro-batch only sees its own 64 negatives. MoCo v3 solves this with a momentum-updated queue of 65K negatives.
+
+| Approach | Negatives | Quality |
+|----------|-----------|---------|
+| InfoNCE + grad accum | 64 in-batch | Poor |
+| MoCo v3 | 65,536 queue | Excellent |
 
 ---
 
@@ -128,11 +197,9 @@ bash b_train.sh
 
 ### JSON Metadata Structure
 
-After processing, `results.json` contains entries like:
-
 ```json
 {
-  "file": "uuid.JPG",
+  "file": "uuid.jpg",
   "text": "BRAND_NAME",
   "vienna_codes": ["27.05.01"],
   "year": 2016
@@ -148,11 +215,22 @@ Fields:
 ### Vienna Codes
 
 Vienna codes classify figurative elements (e.g., "27.05.01" = quadrilaterals). Used for:
-- Weak supervision signal for contrastive learning
+- Weak supervision signal for contrastive learning (same code ≈ similar)
 - Multi-label classification in baselines
 - Dataset grouping for validation pairs
 
 **Level 2 codes** (first two components, e.g., "27.05") are commonly used to reduce label space.
+
+---
+
+## Success Metrics
+
+| Phase | Metric | Target |
+|-------|--------|--------|
+| Week 2 | Recall@100 | >60% |
+| Week 3.5 | Precision@10 | >30% |
+| Week 6.5 | Recall@100 | >85% |
+| Week 8.5 | Query latency (p99) | <500ms |
 
 ---
 
@@ -169,12 +247,14 @@ Vienna codes classify figurative elements (e.g., "27.05.01" = quadrilaterals). U
 No formal dependency management (no requirements.txt, pyproject.toml, etc.). Install manually:
 
 ```bash
-pip install tqdm pillow xmltodict matplotlib numpy tensorflow torch transformers
-```
+# Core dependencies
+pip install tqdm pillow xmltodict matplotlib numpy torch transformers
 
-For logo similarity work, also install:
-```bash
+# Logo similarity work
 pip install faiss-cpu opencv-python-headless pytesseract loguru
+
+# Legacy baselines
+pip install tensorflow
 ```
 
 ---
@@ -184,10 +264,10 @@ pip install faiss-cpu opencv-python-headless pytesseract loguru
 **No formal test suite exists.** Testing is manual/integration-based:
 
 1. **Pipeline validation**: Run scripts sequentially and verify output files
-2. **Image verification**: `f_fix_json.py` includes PIL `img.verify()` for corruption detection
-3. **Statistics validation**: `h_statistics.py` and `i_statistics.py` generate plots for visual inspection
+2. **Image verification**: `legacy/f_fix_json.py` includes PIL `img.verify()` for corruption detection
+3. **Statistics validation**: `legacy/h_statistics.py` and `legacy/i_statistics.py` generate plots for visual inspection
 
-For planned logo similarity detection, validation uses:
+For logo similarity detection, validation uses:
 - Known-similar pairs from Vienna code groupings
 - Opposition decisions for ground-truth calibration
 
@@ -195,7 +275,7 @@ For planned logo similarity detection, validation uses:
 
 ## Key Implementation Plans
 
-The repository contains detailed implementation plans for a 2-stage logo similarity detection system:
+The repository contains detailed implementation plans for the 2-stage logo similarity detection system:
 
 | File | Description |
 |------|-------------|
@@ -203,32 +283,30 @@ The repository contains detailed implementation plans for a 2-stage logo similar
 | `detailed_implementation_plan_v1.5.md` | Phase-by-phase breakdown with hardware constraints |
 | `revised_implementation_plan_V2..md` | Updated plan with MoCo v3, checkpointing, mixed precision |
 
-**Architecture Overview:**
-```
-Input Logo → Preprocess (OCR + mask text) → Stage 1: ANN Retrieval → Stage 2: Re-rank → Results
-```
-
-**Hardware Constraints:**
-- RTX 3060 12GB VRAM limits batch sizes
-- InfoNCE requires large batches (512+); use gradient accumulation or MoCo v3
-- Index building: ~14 hours for 770K images
-
 ---
 
 ## Important Notes
 
 ### Path Conventions
 - Most scripts expect to be run from the repository root
-- Baseline scripts use hardcoded relative paths (`../../../output/`)
+- Legacy baseline scripts use hardcoded relative paths (`../../../output/`)
 - Output directory structure: `output/images/` for images, `output/*.json` for metadata
 
 ### Memory Considerations
 - Dataset is ~53GB raw, ~200GB+ when processed
-- Multiprocessing in `b_build_dataset_multiproc.py` can consume significant RAM
+- Multiprocessing in `legacy/b_build_dataset_multiproc.py` can consume significant RAM
 - Consider reducing `processes` in Pool (line 92) if memory constrained
 
 ### Checkpointing
-The revised implementation plan (V2) emphasizes atomic checkpoints for long-running operations. Current pipeline scripts do not implement this — planned for logo similarity implementation.
+The revised implementation plan (V2) emphasizes atomic checkpoints for long-running operations. Current logo similarity scripts implement this; legacy pipeline scripts do not.
+
+---
+
+## References
+
+1. **MoCo v3**: Chen et al., "An Empirical Study of Training Self-Supervised Vision Transformers", 2021
+2. **EfficientNet**: Tan & Le, "EfficientNet: Rethinking Model Scaling for CNNs", 2019
+3. **ALINE Algorithm**: Kondrak, "A New Algorithm for the Alignment of Phonetic Sequences", 2000
 
 ---
 

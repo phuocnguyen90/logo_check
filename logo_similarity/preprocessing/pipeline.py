@@ -32,7 +32,8 @@ class PreprocessingPipeline:
         
         # We handle caching manually for more control over memory
         # but decorator @lru_cache is useful for the compute-heavy parts
-        self._cache_size = settings.LRU_CACHE_SIZE
+        self._cache_size = self.config.get('cache_size', settings.LRU_CACHE_SIZE)
+        self._skip_text_removal = self.config.get('skip_text_removal', False)
         self._cache = {}
 
     def _get_image_hash(self, image_path: str) -> str:
@@ -64,16 +65,17 @@ class PreprocessingPipeline:
             return None
 
         try:
-            # 1. Detect Text
-            boxes = self.detector.detect_text(img)
+            # 1. Detect & Mask Text (Expensive)
+            if not self._skip_text_removal:
+                boxes = self.detector.detect_text(img)
+                masked = self.masker.mask_text(img, boxes)
+            else:
+                masked = img
             
-            # 2. Mask Text
-            masked = self.masker.mask_text(img, boxes)
-            
-            # 3. Normalize (Resize/Pad/RGB)
+            # 2. Normalize (Resize/Pad/RGB)
             normalized = self.normalizer.normalize(masked)
             
-            # 4. Binarize (Structure)
+            # 3. Binarize (Structure)
             binary = self.normalizer.to_binary_structure(normalized)
             
             result = PreprocessedImage(

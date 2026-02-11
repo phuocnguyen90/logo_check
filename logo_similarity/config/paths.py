@@ -7,13 +7,16 @@ DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 INDEXES_DIR = BASE_DIR / "indexes"
 
-# Dataset Location (from plan)
-RAW_DATASET_DIR = Path("/home/phuoc/.cache/kagglehub/datasets/konradb/ziilogos/versions/1/L3D dataset/")
+# Dataset Location
+RAW_DATASET_DIR = Path(os.getenv("RAW_DATASET_DIR", DATA_DIR / "raw"))
 DATASET_METADATA = RAW_DATASET_DIR / "results.json"
+TOY_DATASET_METADATA = DATA_DIR / "toy_results.json"  # New toy dataset path
 
 # Processed Data Paths
 SPLITS_DIR = DATA_DIR / "splits"
+TOY_SPLITS_DIR = DATA_DIR / "toy_splits"  # <--- New
 VALIDATION_DIR = DATA_DIR / "validation"
+TOY_VALIDATION_DIR = DATA_DIR / "toy_validation" # <--- New
 LOGS_DIR = BASE_DIR / "logs"
 
 # Model Paths

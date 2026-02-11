@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logo-similarity"
+version = "0.1.0"
+description = "Production-ready logo similarity detection system for trademark images."
+authors = [
+    { name = "Antigravity", email = "assistant@google.com" }
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision",
+    "efficientnet-pytorch",
+    "onnx",
+    "onnxruntime-gpu",
+    "onnxconverter-common",
+    "opencv-python-headless",
+    "pillow",
+    "pytesseract",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "joblib",
+    "faiss-gpu",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "loguru",
+    "tqdm",
+    "pydantic",
+    "pydantic-settings"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["logo_similarity*"]
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 100

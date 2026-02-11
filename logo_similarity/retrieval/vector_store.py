@@ -61,7 +61,7 @@ class VectorStore:
     def save(self, path: str):
         """Save FAISS index to disk."""
         try:
-            faiss.write_index(self.index, path)
+            faiss.write_index(self.index, str(path))
             logger.info(f"Saved FAISS index to {path}")
         except Exception as e:
             logger.error(f"Failed to save index: {e}")
@@ -69,7 +69,7 @@ class VectorStore:
     def load(self, path: str):
         """Load FAISS index from disk."""
         try:
-            self.index = faiss.read_index(path)
+            self.index = faiss.read_index(str(path))
             self.dimension = self.index.d
             logger.info(f"Loaded FAISS index from {path} (size={self.index.ntotal})")
         except Exception as e:

@@ -4,86 +4,128 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-The L3D (Large Labelled Logo Dataset) project is a trademark logo dataset with ~770K images from EUIPO TMView (1996-2020). The codebase serves two purposes:
+The L3D (Large Labelled Logo Dataset) project is a trademark logo dataset with ~770K images from EUIPO TMView (1996-2020). The codebase serves three purposes:
 
-1. **Dataset Building Pipeline** - Scripts to download, process, and clean trademark data
-2. **Logo Similarity Detection** - A new 2-stage pipeline for visual trademark similarity search (in planning phase)
+1. **Dataset Building Pipeline** - Scripts to download, process, and clean trademark data (legacy, moved to `legacy/`)
+2. **Logo Similarity Detection** - A 2-stage pipeline for visual trademark similarity search (active development)
+3. **Baseline Models** - DCGAN generation, GPT-2 generation, NASNet classification (moved to `legacy/baselines/`)
 
 ## Environment
 
 - **Python Environment**: Use `torch12` conda/mamba environment (has CUDA 12 preinstalled)
-- **GPU**: RTX 3060 (12GB VRAM) - critical constraint for training
+- **GPU**: RTX 3060 (12GB VRAM) - **critical constraint for training**
+- **System RAM**: 32GB
 - **Dataset Location**: `~/.cache/kagglehub/datasets/konradb/ziilogos/versions/1/L3D dataset/`
 
-## Dataset Building Pipeline
+## Project Structure
 
-The dataset building scripts (prefixes a-g) must be run in order:
-
-```bash
-# 1. Download from EUIPO FTP (1996-2020 data, ~53GB)
-python a_download_data.py
-
-# 2. Build dataset with multiprocessing (edit line 92 for process count)
-python b_build_dataset_multiproc.py
-
-# 3. (Optional) Dataset statistics
-python c_dataset_size_stats.py
-
-# 4. Filter out small images (<20px)
-python d_filter_dataset.py
-
-# 5. Fix JSON metadata and verify images
-python f_fix_json.py
-
-# 6. Remove orphaned image files
-python g_clean_images.py
+```
+logo_similarity/
+├── api/              # FastAPI production endpoints
+├── config/           # Configuration files
+├── embeddings/       # EfficientNet embedder, PCA, ONNX export
+├── preprocessing/    # Text detection, masking, normalization
+├── retrieval/        # Vector store (FAISS), search interface
+├── reranking/        # Spatial feature matching, composite scoring
+├── text/             # Text extraction, phonetic similarity (ALINE)
+├── training/         # MoCo v3 contrastive learning
+└── utils/            # Logging, metrics, data utilities
 ```
 
-**Output Structure**: Each year produces `output_<YEAR>.json` with format:
+## Logo Similarity Detection System
+
+### Architecture (2-Stage Pipeline)
+
+```
+Input Logo → Preprocess (OCR + mask text) → Stage 1: ANN Retrieve Top-1000 → Stage 2: Re-rank → Results
+```
+
+### Key Design Decisions (v2)
+
+| Decision | Rationale |
+|----------|-----------|
+| **MoCo v3** over InfoNCE | True large-batch contrastive (65K negatives) with small actual batch (64) |
+| **On-the-fly preprocessing** | Save ~200GB disk (no .npz storage), LRU cache for repeated access |
+| **Mixed precision (AMP)** | 40% VRAM reduction, 30% speedup |
+| **Atomic checkpoints** | Write to `.tmp` then rename (no corrupt checkpoints) |
+| **Structured logging (loguru)** | Better debugging than `print()` |
+
+### Development Commands
+
+```bash
+# Activate environment
+mamba activate torch12
+
+# Phase 2: Build embedding index (~14 hours, resumable)
+python scripts/03_build_index.py --batch-size 64 --chunk-size 10000
+
+# Phase 4: Train with MoCo v3 (primary approach)
+python scripts/04_train_model_moco.py --batch-size 64 --queue-size 65536
+
+# Phase 6: Export to FP16 ONNX
+python scripts/05_export_onnx.py --fp16
+```
+
+## Hardware Constraints (RTX 3060 12GB)
+
+### Training Configuration (MoCo v3 + AMP)
+
+| Setting | Value | VRAM Usage |
+|---------|-------|------------|
+| Batch size | 64 | ~2GB (with AMP) |
+| Queue size | 65,536 | ~1GB (CPU) |
+| Mixed precision | True | -40% vs FP32 |
+| Index building batch | 64 | ~2GB |
+
+### Why MoCo v3?
+
+Gradient accumulation does NOT give large-batch contrastive quality for InfoNCE. Each micro-batch only sees its own 64 negatives. MoCo v3 solves this with a momentum-updated queue of 65K negatives.
+
+| Approach | Negatives | Quality |
+|----------|-----------|---------|
+| InfoNCE + grad accum | 64 in-batch | Poor |
+| MoCo v3 | 65,536 queue | Excellent |
+
+## Dataset Format
+
 ```json
-{"file": "uuid.JPG", "text": "BRAND_NAME" | null, "vienna_codes": ["27.05.01"], "year": 2016}
+{
+  "file": "uuid.jpg",
+  "text": "BRAND_NAME" | null,  // 90.1% have text
+  "vienna_codes": ["27.05.01"],
+  "year": 2016
+}
 ```
-
-## ImageMagick Processing
-
-Before running `f_fix_json.py`, images must be normalized:
-
-```bash
-cd output/images
-find . -name \*.TIF -exec mogrify -format jpg '{}' \;
-find . -name \*.JPG -exec mogrify -resize 256x256 -background white -gravity center -extent 256x256 '{}' \;
-```
-
-## Baselines
-
-Three baseline approaches exist in `baselines/`:
-
-- **tm_basic_generation**: DCGAN for logo image generation
-- **tm_generation**: GPT-2 based text/logo generation
-- **tm_multi_classification**: NASNet-based Vienna code classification
-
-All baselines use TensorFlow and expect data in `output/` directory.
-
-## Logo Similarity Detection (Planned)
-
-A detailed implementation plan exists in `detailed_implementation_plan.md` for building a 2-stage similarity search system:
-
-1. **Stage 0**: Preprocessing (OCR text detection + masking)
-2. **Stage 1**: Global embedding retrieval with EfficientNet-B0 + ANN index (FAISS/pgvector)
-3. **Stage 2**: Re-ranking with spatial feature matching
-4. **Stage 3**: Fine-tuning with contrastive learning (InfoNCE or MoCo v3)
-
-**Hardware constraints** for training (RTX 3060 12GB):
-- InfoNCE batch size 512 needs ~8-10GB VRAM (tight fit)
-- Use gradient accumulation (8×64) or MoCo v3 as alternative
-- Index building: ~14 hours for 770K images at ~50ms/image
-- FP16 ONNX export recommended for production inference
 
 ## Vienna Codes
 
-Vienna codes are figurative element classifications (e.g., "27.05.01" = quadrilaterals). Used for:
-- Weak supervision signal for contrastive learning
+Figurative element classifications (e.g., "27.05.01" = quadrilaterals). Used for:
+- Weak supervision signal for contrastive learning (same code ≈ similar)
 - Multi-label classification in baselines
 - Dataset grouping for validation pairs
 
-Level 2 codes (first two components) are commonly used for classification to reduce label space.
+Level 2 codes (first two components) are commonly used to reduce label space.
+
+## Success Metrics
+
+| Phase | Metric | Target |
+|-------|--------|--------|
+| Week 2 | Recall@100 | >60% |
+| Week 3.5 | Precision@10 | >30% |
+| Week 6.5 | Recall@100 | >85% |
+| Week 8.5 | Query latency (p99) | <500ms |
+
+## Legacy Code
+
+Dataset building scripts (a-g) and baselines have been moved to `legacy/`:
+- `legacy/a_download_data.py` - EUIPO FTP download
+- `legacy/b_build_dataset_multiproc.py` - Dataset builder
+- `legacy/baselines/` - DCGAN, GPT-2, NASNet models
+
+These use TensorFlow and expect data in `output/` directory.
+
+## References
+
+1. **MoCo v3**: Chen et al., "An Empirical Study of Training Self-Supervised Vision Transformers", 2021
+2. **EfficientNet**: Tan & Le, "EfficientNet: Rethinking Model Scaling for CNNs", 2019
+3. **ALINE Algorithm**: Kondrak, "A New Algorithm for the Alignment of Phonetic Sequences", 2000

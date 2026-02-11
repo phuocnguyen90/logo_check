@@ -12,26 +12,44 @@ from logo_similarity.utils.logging import logger
 from logo_similarity.embeddings.efficientnet import EfficientNetEmbedder
 from logo_similarity.training.dataset import TrademarkDataset, get_moco_augmentations
 from logo_similarity.training.moco_trainer import MoCo
+import argparse
 
-def load_metadata():
-    with open(paths.DATASET_METADATA, "r") as f:
+def load_split(split_path):
+    with open(split_path, "r") as f:
         return json.load(f)
 
 def train():
     logger.info("Starting MoCo v3 Training...")
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--toy", action="store_true", help="Run on toy dataset")
+    args = parser.parse_args()
+
     # 1. Setup Data
-    metadata = load_metadata()
-    # Sample subset for speed in MVP if needed, but here we assume full dataset
-    # metadata = metadata[:100000] 
+    if args.toy:
+        logger.info("Training on TOY dataset")
+        train_path = paths.TOY_SPLITS_DIR / "train.json"
+        val_path = paths.TOY_SPLITS_DIR / "val.json"
+    else:
+        train_path = paths.SPLITS_DIR / "train.json"
+        val_path = paths.SPLITS_DIR / "val.json"
+
+    if not train_path.exists():
+        logger.error(f"Split file not found: {train_path}. Run scripts/01_run_eda.py first.")
+        return
+
+    train_metadata = load_split(train_path)
+    # val_metadata = load_split(val_path) # Not used in MoCo loop currently but good to have
+
+    # Subsampling removed for "mini-toy" representative test
+    # if args.toy:
+    #     logger.info("Toy mode: Subsampling training data to 2000 images for speed.")
+    #     train_metadata = train_metadata[:2000]
+
+    logger.info(f"Loaded {len(train_metadata)} training images")
     
     train_transform = get_moco_augmentations(settings.IMG_SIZE)
-    dataset = TrademarkDataset(metadata, transform=train_transform)
-    
-    # Split
-    train_size = int(0.9 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    train_dataset = TrademarkDataset(train_metadata, transform=train_transform)
     
     train_loader = DataLoader(
         train_dataset, 
@@ -80,7 +98,11 @@ def train():
             logger.error(f"Failed to resume from checkpoint: {e}")
 
     # 4. Training Loop
-    for epoch in range(start_epoch, settings.EPOCHS):
+    target_epochs = 2 if args.toy else settings.EPOCHS
+    if args.toy:
+        logger.info(f"Toy mode: limiting training to {target_epochs} epochs")
+        
+    for epoch in range(start_epoch, target_epochs):
         model.train()
         train_loss = []
         

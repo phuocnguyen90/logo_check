@@ -26,7 +26,10 @@ class TrademarkDataset(Dataset):
         self.metadata = metadata
         self.transform = transform
         self.is_training = is_training
-        self.pipeline = PreprocessingPipeline()
+        
+        # Training throughput optimization: skip compute-heavy text removal on-the-fly
+        pipeline_config = {'skip_text_removal': is_training}
+        self.pipeline = PreprocessingPipeline(config=pipeline_config)
         
         # Build index of images by Vienna code for positive sampling
         self.vienna_to_indices = {}

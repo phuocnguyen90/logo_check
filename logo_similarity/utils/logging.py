@@ -1,6 +1,6 @@
 import sys
 from loguru import logger
-from .config.paths import LOGS_DIR
+from logo_similarity.config.paths import LOGS_DIR
 
 def setup_logging(level="INFO"):
     """Configure loguru logging to console and file."""
