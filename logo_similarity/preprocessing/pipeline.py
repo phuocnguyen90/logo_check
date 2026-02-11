@@ -41,11 +41,21 @@ class PreprocessingPipeline:
         return hashlib.md5(image_path.encode()).hexdigest()
 
     def load_image(self, image_path: str) -> Optional[np.ndarray]:
-        """Load image from disk."""
+        """Load image from disk with case-insensitive extension fallback."""
         try:
             image = cv2.imread(image_path)
             if image is None:
-                logger.error(f"Failed to load image: {image_path}")
+                # Try case conversion for extension
+                path = Path(image_path)
+                if path.suffix.lower() == '.jpg':
+                    # Swap case: .jpg -> .JPG or .JPG -> .jpg
+                    alt_suffix = '.JPG' if path.suffix == '.jpg' else '.jpg'
+                    alt_path = path.with_suffix(alt_suffix)
+                    if alt_path.exists():
+                        image = cv2.imread(str(alt_path))
+                
+                if image is None:
+                    logger.error(f"Failed to load image: {image_path}")
             return image
         except Exception as e:
             logger.error(f"Error loading image {image_path}: {e}")
