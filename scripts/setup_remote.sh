@@ -7,7 +7,7 @@ echo "Setting up remote environment..."
 
 # 1. Install System Dependencies
 echo "Installing system dependencies..."
-apt-get update && apt-get install -y tesseract-ocr libgl1-mesa-glx unzip
+apt-get update && apt-get install -y tesseract-ocr libgl1 libglib2.0-0 unzip
 
 # 2. Install Python Dependencies
 echo "Installing python dependencies..."
