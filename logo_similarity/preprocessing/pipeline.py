@@ -42,25 +42,40 @@ class PreprocessingPipeline:
         return hashlib.md5(image_path.encode()).hexdigest()
 
     def load_image(self, image_path: str) -> Optional[np.ndarray]:
-        """Load image from disk with case-insensitive extension fallback."""
-        try:
-            image = cv2.imread(image_path)
-            if image is None:
-                # Try case conversion for extension
-                path = Path(image_path)
-                if path.suffix.lower() == '.jpg':
-                    # Swap case: .jpg -> .JPG or .JPG -> .jpg
-                    alt_suffix = '.JPG' if path.suffix == '.jpg' else '.jpg'
-                    alt_path = path.with_suffix(alt_suffix)
-                    if alt_path.exists():
-                        image = cv2.imread(str(alt_path))
-                
-                if image is None:
-                    logger.error(f"Failed to load image: {image_path}")
-            return image
-        except Exception as e:
-            logger.error(f"Error loading image {image_path}: {e}")
-            return None
+        """
+        Load image from disk with robustness for:
+        1. Case-insensitive extensions (.jpg vs .JPG)
+        2. Flattened directory structures (with or without 'images/' subfolder)
+        """
+        path = Path(image_path)
+        
+        # List of potential paths to try
+        search_paths = [path]
+        
+        # Fallback 1: Swap case of extension
+        if path.suffix.lower() == '.jpg':
+            alt_suffix = '.JPG' if path.suffix == '.jpg' else '.jpg'
+            search_paths.append(path.with_suffix(alt_suffix))
+            
+        # Fallback 2: Check one level up (if 'images' is in path but folder structure is flat)
+        if "images" in path.parts:
+            # Construct path without 'images' part
+            new_parts = [p for p in path.parts if p != "images"]
+            flat_path = Path(*new_parts)
+            search_paths.append(flat_path)
+            # And case-swapped version of flat path
+            if flat_path.suffix.lower() == '.jpg':
+                alt_suffix = '.JPG' if flat_path.suffix == '.jpg' else '.jpg'
+                search_paths.append(flat_path.with_suffix(alt_suffix))
+
+        for p in search_paths:
+            if p.exists():
+                image = cv2.imread(str(p))
+                if image is not None:
+                    return image
+
+        logger.error(f"Failed to load image at any location: {image_path}")
+        return None
 
     def process_on_the_fly(self, image_path: str) -> Optional[PreprocessedImage]:
         """
