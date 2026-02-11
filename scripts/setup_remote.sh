@@ -39,20 +39,21 @@ if [ ! -f "$RAW_DIR/results.json" ]; then
     chmod 600 ~/.kaggle/kaggle.json
     
     # Download the dataset
+    echo "Downloading dataset (this may take a few minutes)..."
     kaggle datasets download -d konradb/ziilogos -p "$RAW_DIR"
     
-    echo "Extracting dataset..."
-    unzip -o "$RAW_DIR/ziilogos.zip" -d "$RAW_DIR"
+    echo "Extracting dataset (silently to avoid SSH timeout)..."
+    unzip -oq "$RAW_DIR/ziilogos.zip" -d "$RAW_DIR"
     
+    echo "Cleaning up and organizing files..."
     # The ziilogos dataset usually extracts into a subfolder. 
     # Let's align it with our RAW_DATASET_DIR path.
-    # Check if 'L3D dataset' folder exists inside and move its content up
     if [ -d "$RAW_DIR/L3D dataset" ]; then
-        mv "$RAW_DIR/L3D dataset/"* "$RAW_DIR/"
-        rmdir "$RAW_DIR/L3D dataset"
+        mv "$RAW_DIR/L3D dataset/"* "$RAW_DIR/" || true
+        rm -rf "$RAW_DIR/L3D dataset"
     fi
     
-    rm "$RAW_DIR/ziilogos.zip"
+    rm -f "$RAW_DIR/ziilogos.zip"
 else
     echo "Dataset already found in $RAW_DIR, skipping download."
 fi
