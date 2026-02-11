@@ -16,15 +16,15 @@ REDUCED_DIM = 512
 TOP_K_GLOBAL = 1000
 TOP_K_RERANK = 100
 
-# MoCo v3 Hyperparameters (Optimized for RTX 3060)
-BATCH_SIZE = 64
+# MoCo v3 Hyperparameters (Optimized for High-VRAM GPUs)
+BATCH_SIZE = 128
 QUEUE_SIZE = 65536
 MOMENTUM = 0.999
 TEMPERATURE = 0.07
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
-EPOCHS = 100
-WARMUP_EPOCHS = 10
+EPOCHS = 20
+WARMUP_EPOCHS = 2
 USE_AMP = True
 
 # Composite Scoring Weights
