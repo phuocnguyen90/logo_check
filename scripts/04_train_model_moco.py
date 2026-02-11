@@ -123,6 +123,8 @@ def train():
             # Load scheduler state if exists
             if 'scheduler_state_dict' in checkpoint:
                  scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                 # Ensure T_max is updated to the new setting if extending training
+                 scheduler.T_max = settings.EPOCHS
             
             start_epoch = checkpoint['epoch'] + 1
             best_loss = checkpoint.get('best_loss', float('inf'))

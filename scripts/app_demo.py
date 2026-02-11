@@ -198,7 +198,7 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.subheader("Query Image")
     if query_img_path:
-        st.image(query_img_path, use_container_width=True)
+        st.image(query_img_path, width='stretch')
         if target_img_name:
             st.caption(f"Target: {target_img_name}")
     else:
@@ -276,7 +276,7 @@ with col2:
                 with col:
                     # Load image
                     if os.path.exists(cand['path']):
-                        st.image(cand['path'], use_container_width=True)
+                        st.image(cand['path'], width='stretch')
                     else:
                         st.warning("Image missing")
                         
