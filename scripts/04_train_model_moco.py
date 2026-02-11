@@ -55,7 +55,7 @@ def train():
         train_dataset, 
         batch_size=settings.BATCH_SIZE, 
         shuffle=True, 
-        num_workers=8, 
+        num_workers=16, 
         pin_memory=True,
         drop_last=True
     )
