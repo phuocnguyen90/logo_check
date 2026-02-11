@@ -3,6 +3,8 @@ import numpy as np
 from typing import Dict, Any
 from ..utils.logging import logger
 
+from ..config import settings
+
 class CompositeScorer:
     """
     Final scoring logic combining multiple similarity dimensions.
@@ -11,10 +13,10 @@ class CompositeScorer:
     
     def __init__(self, weights: Dict[str, float] = None):
         self.weights = weights or {
-            "global": 0.50,
-            "spatial": 0.35,
-            "text": 0.10,
-            "color": 0.05
+            "global": settings.WEIGHT_GLOBAL,
+            "spatial": settings.WEIGHT_SPATIAL,
+            "text": settings.WEIGHT_TEXT,
+            "color": settings.WEIGHT_COLOR
         }
         logger.info(f"Initialized CompositeScorer with weights: {self.weights}")
 

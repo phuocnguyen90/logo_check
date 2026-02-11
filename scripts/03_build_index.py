@@ -225,19 +225,26 @@ def build_index():
         logger.error("No chunks found to index.")
         return
 
-    logger.info("Fitting IncrementalPCA...")
-    reducer = PCAReducer(n_components=reduced_dim)
+    reducer = None
+    final_dim = embed_dim
     
-    for chunk_file in tqdm(chunk_files, desc="PCA Fitting"):
-        with np.load(chunk_file) as data:
-            emb = data['embeddings']
-            reducer.partial_fit(emb)
-            
-    reducer.save(paths.MODELS_DIR / "pca_model.joblib")
+    if settings.USE_PCA:
+        logger.info("Fitting IncrementalPCA...")
+        reducer = PCAReducer(n_components=reduced_dim)
+        
+        for chunk_file in tqdm(chunk_files, desc="PCA Fitting"):
+            with np.load(chunk_file) as data:
+                emb = data['embeddings']
+                reducer.partial_fit(emb)
+                
+        reducer.save(paths.MODELS_DIR / "pca_model.joblib")
+        final_dim = reduced_dim
+    else:
+        logger.info("Skipping PCA (USE_PCA=False). Using raw embeddings.")
     
     # Phase 2b: Build FAISS Index
-    logger.info("Building FAISS index...")
-    store = VectorStore(dimension=reduced_dim, index_type="hnsw")
+    logger.info(f"Building FAISS index (dim={final_dim})...")
+    store = VectorStore(dimension=final_dim, index_type="hnsw")
     
     full_id_list = []
     
@@ -246,8 +253,11 @@ def build_index():
             emb = data['embeddings'] # [N, 1280]
             ids = data['ids'] # [N]
             
-            # Reduce
-            reduced_emb = reducer.transform(emb) # [N, 64]
+            # Reduce if enabled
+            if settings.USE_PCA and reducer:
+                reduced_emb = reducer.transform(emb) # [N, 512]
+            else:
+                reduced_emb = emb # [N, 1280]
             
             # Add to store
             # Store expects integer IDs. We maintain a mapping.

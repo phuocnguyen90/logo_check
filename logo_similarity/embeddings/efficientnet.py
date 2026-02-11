@@ -30,7 +30,7 @@ class EfficientNetEmbedder(nn.Module):
             logger.error(f"Failed to initialize EfficientNet: {e}")
             raise
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         """
         Extract global average pooled features.
         Input: [B, 3, 224, 224]
@@ -41,7 +41,12 @@ class EfficientNetEmbedder(nn.Module):
         
         # Global Average Pooling
         pooled = torch.nn.functional.adaptive_avg_pool2d(features, 1)
-        return pooled.squeeze(-1).squeeze(-1)
+        emb = pooled.squeeze(-1).squeeze(-1)
+        
+        if normalize:
+            emb = torch.nn.functional.normalize(emb, dim=1)
+            
+        return emb
 
     def extract_spatial(self, x: torch.Tensor) -> torch.Tensor:
         """

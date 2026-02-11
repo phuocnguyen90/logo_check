@@ -13,6 +13,21 @@ from logo_similarity.embeddings.efficientnet import EfficientNetEmbedder
 from logo_similarity.training.dataset import TrademarkDataset, get_moco_augmentations
 from logo_similarity.training.moco_trainer import MoCo
 import argparse
+import numpy as np
+
+# Allow unpickling numpy scalars from checkpoints (needed for torch.load in PyTorch 2.4+)
+try:
+    import torch.serialization
+    # Add both the internal and public name of the scalar
+    torch.serialization.add_safe_globals([
+        np.core.multiarray.scalar,
+        np._core.multiarray.scalar if hasattr(np, '_core') else np.core.multiarray.scalar,
+        # Also just in case, the float64/int64 variants
+        np.float64, np.int64
+    ])
+    print("Added numpy scalars to torch safe globals")
+except Exception as e:
+    print(f"Safe globals setup failed: {e}")
 
 def load_split(split_path):
     with open(split_path, "r") as f:
@@ -49,7 +64,13 @@ def train():
     logger.info(f"Loaded {len(train_metadata)} training images")
     
     train_transform = get_moco_augmentations(settings.IMG_SIZE)
-    train_dataset = TrademarkDataset(train_metadata, transform=train_transform)
+    # Use standard Self-Supervised Learning (Instance Discrimination)
+    # This is more stable than weak supervision for initial training phase.
+    train_dataset = TrademarkDataset(
+        train_metadata, 
+        transform=train_transform,
+        use_instance_discrimination=True
+    )
     
     train_loader = DataLoader(
         train_dataset, 
@@ -76,6 +97,13 @@ def train():
         weight_decay=settings.WEIGHT_DECAY
     )
     
+    # Cosine Annealing Scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=settings.EPOCHS, 
+        eta_min=1e-6
+    )
+
     criterion = nn.CrossEntropyLoss().cuda()
     scaler = GradScaler(enabled=settings.USE_AMP)
     
@@ -87,10 +115,15 @@ def train():
     if checkpoint_path.exists():
         try:
             logger.info(f"Loading checkpoint from {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            
+            # Load scheduler state if exists
+            if 'scheduler_state_dict' in checkpoint:
+                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
             start_epoch = checkpoint['epoch'] + 1
             best_loss = checkpoint.get('best_loss', float('inf'))
             logger.info(f"Resumed from epoch {start_epoch}")
@@ -105,6 +138,10 @@ def train():
     for epoch in range(start_epoch, target_epochs):
         model.train()
         train_loss = []
+        
+        # Log current LR
+        current_lr = scheduler.get_last_lr()[0]
+        logger.info(f"Epoch {epoch} | LR: {current_lr:.6f}")
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
         for im_q, im_k in pbar:
@@ -122,6 +159,9 @@ def train():
             
             train_loss.append(loss.item())
             pbar.set_postfix(loss=np.mean(train_loss))
+        
+        # Step Scheduler
+        scheduler.step()
             
         avg_loss = np.mean(train_loss)
         logger.info(f"Epoch {epoch} complete. Avg Loss: {avg_loss:.4f}")
@@ -132,6 +172,7 @@ def train():
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scaler_state_dict': scaler.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'best_loss': best_loss,
             'queue': model.queue,
             'queue_ptr': model.queue_ptr

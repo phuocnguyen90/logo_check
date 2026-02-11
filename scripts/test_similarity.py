@@ -1,4 +1,5 @@
 import json
+import cv2
 import torch
 import numpy as np
 from pathlib import Path
@@ -9,6 +10,7 @@ from logo_similarity.retrieval.vector_store import VectorStore
 from logo_similarity.utils.logging import logger
 from PIL import Image
 from torchvision import transforms
+from logo_similarity.preprocessing.pipeline import PreprocessingPipeline
 
 def test_similarity():
     """
@@ -58,57 +60,82 @@ def test_similarity():
     pairs_path = paths.TOY_VALIDATION_DIR / "similar_pairs.json"
     with open(pairs_path, "r") as f:
         pairs = json.load(f)
+        
+    # Build a temporary RAW (1280-dim) index for the toy set
+    # to see if the model is learning ANYTHING before PCA compression
+    print("Building temporary 1280-dim index for direct test...")
+    raw_store = VectorStore(dimension=1280, index_type="hnsw")
     
-    # 4. Run Search Tests
+    # We need to compute raw embeddings for all toy images
+    # Let's just use the already built chunks if they are available
+    chunk_dir = paths.EMBEDDING_INDEX_DIR / "chunks"
+    chunk_files = sorted(chunk_dir.glob("*.npz"))
+    
+    toy_id_list = []
+    start_idx = 0
+    for cf in chunk_files:
+        with np.load(cf) as data:
+            emb = data['embeddings'] # These are now normalized 1280-dim
+            ids = data['ids']
+            # Add to raw store
+            indices = list(range(start_idx, start_idx + len(ids)))
+            raw_store.add(emb, indices)
+            toy_id_list.extend(ids.tolist())
+            start_idx += len(ids)
+            
     transform = transforms.Compose([
         transforms.Resize((settings.IMG_SIZE, settings.IMG_SIZE)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    print("\n" + "="*50)
-    print("SIMILARITY SEARCH TEST RESULTS (Top-10)")
-    print("="*50)
+    print(f"\n{'='*50}")
+    print(f"SIMILARITY SEARCH (RAW 1280-DIM, NO PCA) - Top-100")
+    print(f"{'='*50}")
     
-    # Test first 10 pairs
-    success_count = 0
+    top10_count = 0
+    top100_count = 0
     test_n = 10
     
+    pipeline = PreprocessingPipeline(config={'skip_text_removal': True})
+
     for i in range(test_n):
         p = pairs[i]
-        img1_path = paths.RAW_DATASET_DIR / "images" / p['image1']
-        img2_path = paths.RAW_DATASET_DIR / "images" / p['image2']
-        
-        if not img1_path.exists():
-            continue
+        potential_path = str(paths.RAW_DATASET_DIR / "images" / p['image1'])
+        img_np = pipeline.load_image(potential_path)
+        if img_np is None: continue
             
-        # Get embedding for img1
-        img1 = transform(Image.open(img1_path).convert('RGB')).unsqueeze(0).cuda()
+        img_pil = Image.fromarray(cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB))
+        img_tensor = transform(img_pil).unsqueeze(0).cuda()
+        
         with torch.no_grad():
-            emb1 = model(img1).cpu().numpy()
+            raw_emb = model(img_tensor).cpu().numpy().reshape(1, -1)
         
-        reduced_emb1 = reducer.transform(emb1)
+        # Search Top 100 in RAW index
+        distances, indices = raw_store.search(raw_emb, k=100)
         
-        # Search
-        distances, indices = store.search(reduced_emb1, k=10)
+        matched_filenames = [toy_id_list[int(idx)] for idx in indices if idx < len(toy_id_list)]
         
-        matched_filenames = [id_map[idx] for idx in indices if idx < len(id_map)]
+        found_top10 = p['image2'] in matched_filenames[:10]
+        found_top100 = p['image2'] in matched_filenames
         
-        print(f"Test Pair {i+1} (Vienna: {p['vienna_code']})")
-        print(f"  Query:  {p['image1']}")
-        print(f"  Target: {p['image2']}")
-        
-        if p['image2'] in matched_filenames:
+        print(f"Test Pair {i+1}: {p['image1']} -> {p['image2']}")
+        if found_top10:
+            top10_count += 1
+            print(f"  RESULT: SUCCESS (Top 10!)")
+        elif found_top100:
+            top100_count += 1
             rank = matched_filenames.index(p['image2']) + 1
             print(f"  RESULT: SUCCESS (Rank {rank})")
-            success_count += 1
         else:
-            print(f"  RESULT: FAILURE (Not in top 10)")
+            print(f"  RESULT: FAILURE (Not in top 100)")
         
-        print(f"  Matches: {matched_filenames[:3]}...")
-        print("-" * 50)
+        print(f"  Top 5 Dists: {distances[:5]}")
+        print(f"  Top 3 Matches: {matched_filenames[:3]}...")
 
-    print(f"\nFinal Score: {success_count}/{test_n} targets found in Top 10.")
+    print(f"\nRAW EMBEDDING SUMMARY:")
+    print(f"- Found in Top 10:  {top10_count}/{test_n}")
+    print(f"- Found in Top 100: {top10_count + top100_count}/{test_n}")
     print("="*50 + "\n")
 
 if __name__ == "__main__":

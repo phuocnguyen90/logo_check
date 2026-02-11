@@ -19,7 +19,8 @@ class VectorStore:
         """Create the underlying FAISS index."""
         if index_type == "hnsw":
             # M=32 is a good balance for search speed/accuracy
-            sub_index = faiss.IndexHNSWFlat(self.dimension, 32)
+            # Use Inner Product for contrastive embeddings (equivalent to Cosine when normalized)
+            sub_index = faiss.IndexHNSWFlat(self.dimension, 32, faiss.METRIC_INNER_PRODUCT)
         elif index_type == "l2":
             sub_index = faiss.IndexFlatL2(self.dimension)
         elif index_type == "cosine":
@@ -55,7 +56,9 @@ class VectorStore:
             distances, indices = self.index.search(query, k)
             return distances[0], indices[0]
         except Exception as e:
+            import traceback
             logger.error(f"Search failed: {e}")
+            logger.error(traceback.format_exc())
             return np.array([]), np.array([])
 
     def save(self, path: str):

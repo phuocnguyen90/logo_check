@@ -11,6 +11,7 @@ LRU_CACHE_SIZE = 1000
 MODEL_NAME = "efficientnet-b0"
 EMBEDDING_DIM = 1280
 REDUCED_DIM = 512
+USE_PCA = False  # Set to False to use raw embeddings (1280 dim)
 
 # Search Settings
 TOP_K_GLOBAL = 1000
@@ -19,11 +20,11 @@ TOP_K_RERANK = 100
 # MoCo v3 Hyperparameters (Optimized for High-VRAM GPUs)
 BATCH_SIZE = 128
 QUEUE_SIZE = 65536
-MOMENTUM = 0.999
-TEMPERATURE = 0.07
-LEARNING_RATE = 1e-4
+MOMENTUM = 0.99
+TEMPERATURE = 0.1
+LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-4
-EPOCHS = 20
+EPOCHS = 30
 WARMUP_EPOCHS = 2
 USE_AMP = True
 

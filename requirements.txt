@@ -30,3 +30,4 @@ tqdm
 pydantic
 pydantic-settings
 kaggle
+python-dotenv
