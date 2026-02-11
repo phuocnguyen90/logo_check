@@ -12,7 +12,15 @@ apt-get update && apt-get install -y tesseract-ocr libgl1 libglib2.0-0 unzip
 # 2. Install Python Dependencies
 echo "Installing python dependencies..."
 pip install --upgrade pip
-pip install -r requirements.txt
+
+# Install main requirements
+# Note: We handle FAISS separately because faiss-gpu often fails on newer Python/Ubuntu
+grep -v "faiss" requirements.txt > requirements_remote.txt
+pip install -r requirements_remote.txt
+
+# Try to install FAISS with GPU support, fallback to CPU
+echo "Installing FAISS (attempting GPU, then CPU)..."
+pip install faiss-gpu-cu12 || pip install faiss-gpu || pip install faiss-cpu
 
 # 3. Download Dataset from Kaggle
 if [ -z "$KAGGLE_USERNAME" ] || [ -z "$KAGGLE_KEY" ]; then
