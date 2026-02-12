@@ -11,6 +11,7 @@ import random
 from typing import List, Dict, Any, Tuple
 from torchvision import transforms
 from PIL import Image
+from collections import defaultdict
 
 from logo_similarity.config import settings, paths
 from logo_similarity.utils.logging import logger
