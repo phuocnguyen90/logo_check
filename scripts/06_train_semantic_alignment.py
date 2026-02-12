@@ -138,7 +138,8 @@ class SemanticAlignmentDataset(torch.utils.data.Dataset):
         
         # Strategy A: Text Match (40%)
         if choice < 0.4:
-            txt = item.get('text', '').lower().strip()
+            raw_text = item.get('text')
+            txt = raw_text.lower().strip() if raw_text else ""
             if txt and txt in self.text_to_indices:
                 candidates = self.text_to_indices[txt]
                 if len(candidates) > 1:
