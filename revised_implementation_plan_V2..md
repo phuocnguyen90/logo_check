@@ -340,7 +340,35 @@ early_stopping_patience = 10
 - ✅ Resource monitoring and logging
 - ✅ Graceful shutdown on SIGTERM/SIGINT
 
+
 ---
+
+## Phase 4b: Semantic Alignment (The Missing Link)
+
+**Status**: **CRITICAL ADDITION**  
+**Trigger**: Model achieved excellent instance discrimination (loss < 4.8) but 0% semantic recall at Epoch 46.
+
+**Diagnosis**:
+The model learned that "Image A is unique" (Instance Discrimination), causing it to push away semantically similar images (e.g., other "Apple" logos). We must now re-align these features using available labels.
+
+### Strategy
+
+Treat the first 46 epochs as "Pre-training". Now switch to "Semantic Fine-tuning".
+
+1.  **Objective**: Pull together images that share the same **Brand Name** (strongest signal) or **Vienna Code** (weak signal).
+2.  **Sampling**:
+    *   **40%**: Same **Brand Name** (Text) → e.g., distinct "Nike" logos.
+    *   **40%**: Same **Vienna Code** (Visual Class) → e.g., complex "27.05.01" matches.
+    *   **20%**: Self-Augmentation (Instance) → Prevent catastrophic forgetting of robust features.
+3.  **Key Config Changes**:
+    *   `skip_text_removal`: **TRUE** (We WANT the model to read/recognize brand text now).
+    *   `learning_rate`: **1e-5** (Low LR to nudge features, not destroy them).
+    *   `epochs`: **20**.
+
+### Script: `scripts/06_train_semantic_alignment.py`
+
+---
+
 
 ## Phase 5: Composite Mark Integration
 

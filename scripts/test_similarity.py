@@ -20,7 +20,7 @@ def test_similarity():
     logger.info("Initializing similarity test...")
     
     # 1. Load Index and ID Map
-    dim = settings.REDUCED_DIM
+    dim = settings.EMBEDDING_DIM if not settings.USE_PCA else settings.REDUCED_DIM
     store = VectorStore(dimension=dim, index_type="hnsw")
     index_path = paths.EMBEDDING_INDEX_DIR / "faiss_index.bin"
     if not index_path.exists():
@@ -29,8 +29,10 @@ def test_similarity():
         
     store.load(index_path)
     
-    pca_path = paths.MODELS_DIR / "pca_model.joblib"
-    reducer = PCAReducer.load(pca_path)
+    reducer = None
+    if settings.USE_PCA:
+        pca_path = paths.MODELS_DIR / "pca_model.joblib"
+        reducer = PCAReducer.load(pca_path)
     
     id_map_path = paths.EMBEDDING_INDEX_DIR / "id_map.json"
     with open(id_map_path, "r") as f:
