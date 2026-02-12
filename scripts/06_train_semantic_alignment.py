@@ -30,147 +30,148 @@ class SemanticAlignmentDataset(torch.utils.data.Dataset):
     3. 20% Chance: Same Vienna Code - weak semantic signal (fallback).
     """
     
-    def __init__(self, metadata: List[Dict[str, Any]], transform=None):
+    import cv2
+    from collections import defaultdict
+
+    def __init__(self, metadata, transform=None):
         self.metadata = metadata
         self.transform = transform
         
-        # Training config: Skip text removal to speed up training
-        self.pipeline = PreprocessingPipeline(config={'skip_text_removal': True})
-        
-        # Indexing
-        self.text_to_indices = {}
-        self.vienna_to_indices = {}
+        # Pre-compute indices for fast lookup
+        self.text_to_indices = defaultdict(list)
+        self.vienna_to_indices = defaultdict(list)
         
         logger.info("Indexing dataset for semantic sampling...")
         for idx, item in tqdm(enumerate(metadata), total=len(metadata)):
-            # Index by Text (Brand Name)
+            # Index by Text
             text = item.get('text')
-            if text and len(text) > 2: # Ignore tiny/empty strings
+            if text and len(text) > 2:
                 norm_text = text.lower().strip()
-                if norm_text not in self.text_to_indices:
-                    self.text_to_indices[norm_text] = []
                 self.text_to_indices[norm_text].append(idx)
             
             # Index by Vienna Code
-            codes = item.get('vienna_codes', [])
-            for code in codes:
-                if code not in self.vienna_to_indices:
-                    self.vienna_to_indices[code] = []
+            for code in item.get('vienna_codes', []):
                 self.vienna_to_indices[code].append(idx)
                 
-        # Filter for valid groups (must have > 1 image to sample a pair)
+        # Filter for valid groups
         self.valid_text_groups = [k for k, v in self.text_to_indices.items() if len(v) > 1]
         self.valid_vienna_groups = [k for k, v in self.vienna_to_indices.items() if len(v) > 1]
         
-        logger.info(f"Found {len(self.valid_text_groups)} unique brand names with multiple logo variants.")
-        logger.info(f"Found {len(self.valid_vienna_groups)} vienna codes with multiple variants.")
+        logger.info(f"Unique Brands: {len(self.valid_text_groups)}, Unique Vienna: {len(self.valid_vienna_groups)}")
 
     def __len__(self):
         return len(self.metadata)
 
-    def _load_image(self, idx):
+    def _load_and_preprocess(self, idx):
+        """Fast path loader optimized for training throughput."""
         item = self.metadata[idx]
         original_name = item['file']
         
-        # Robust loading: The JSON might have .JPG/.TIF but disk might be all .jpg
-        candidates = [original_name]
+        # 1. Resolve Path (Fastest checks first)
+        base_dir = paths.RAW_DATASET_DIR
+        # Check standard path
+        path = base_dir / "images" / original_name
         
-        # Add fallback to .jpg (lowercase)
-        stem = os.path.splitext(original_name)[0]
-        candidates.append(f"{stem}.jpg")
-        candidates.append(f"{stem}.JPG")
+        # Fallback 1: Flat directory
+        if not path.exists():
+             path = base_dir / original_name
+             
+        # Fallback 2: Extension swap
+        if not path.exists():
+            stem = os.path.splitext(original_name)[0]
+            path = base_dir / "images" / f"{stem}.jpg"
+            if not path.exists():
+                path = base_dir / f"{stem}.jpg"
         
-        # Deduplicate while preserving order
-        candidates = list(dict.fromkeys(candidates))
-        
-        for name in candidates:
-            path1 = paths.RAW_DATASET_DIR / "images" / name
-            if path1.exists():
-                return str(path1)
-            path2 = paths.RAW_DATASET_DIR / name
-            if path2.exists():
-                return str(path2)
-        return None
+        if not path.exists():
+            return None
+
+        try:
+            # 2. Load with OpenCV
+            img = cv2.imread(str(path))
+            if img is None: return None
+            
+            # 3. Normalize (Resize + Pad)
+            # Convert BGR to RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            h, w = img.shape[:2]
+            target_size = settings.IMG_SIZE
+            scale = target_size / max(h, w)
+            new_h, new_w = int(h * scale), int(w * scale)
+            
+            if scale != 1.0:
+                img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            
+            # Create canvas
+            canvas = np.full((target_size, target_size, 3), 255, dtype=np.uint8)
+            y_off = (target_size - new_h) // 2
+            x_off = (target_size - new_w) // 2
+            canvas[y_off:y_off+new_h, x_off:x_off+new_w] = img
+            
+            # 4. To PIL
+            return Image.fromarray(canvas)
+            
+        except Exception:
+            return None
 
     def __getitem__(self, idx):
-        # Retry logic if image load fails
-        for _ in range(5):
-            try:
-                return self._getitem_safe(idx)
-            except Exception:
-                idx = random.randint(0, len(self.metadata) - 1)
-        return self._getitem_safe(0) # Ultimate fallback
-
-    def _getitem_safe(self, idx):
         # 1. Anchor Image
-        img_path = self._load_image(idx)
-        if not img_path: raise FileNotFoundError(f"Image not found for idx {idx}")
+        img_q = self._load_and_preprocess(idx)
         
-        prep1 = self.pipeline.process_on_the_fly(img_path)
-        if not prep1: raise ValueError("Preprocessing failed")
-        img1 = Image.fromarray(prep1.normalized)
-
-        # 2. Pick Positive Strategy
-        strategy = random.random()
+        # Retry logic
+        attempts = 0
+        while img_q is None and attempts < 5:
+            idx = random.randint(0, len(self.metadata) - 1)
+            img_q = self._load_and_preprocess(idx)
+            attempts += 1
+            
+        if img_q is None: # Ultimate fallback
+             img_q = Image.new('RGB', (settings.IMG_SIZE, settings.IMG_SIZE), (255, 255, 255))
+        
         item = self.metadata[idx]
-        pos_idx = idx # Default to self
+        
+        # 2. Pick Positive Strategy
+        choice = random.random()
+        pos_idx = idx 
         
         # Strategy A: Text Match (40%)
-        found_match = False
-        if strategy < 0.4:
-            text = item.get('text', '')
-            if text and len(text) > 2:
-                norm_text = text.lower().strip()
-                candidates = self.text_to_indices.get(norm_text, [])
+        if choice < 0.4:
+            txt = item.get('text', '').lower().strip()
+            if txt and txt in self.text_to_indices:
+                candidates = self.text_to_indices[txt]
                 if len(candidates) > 1:
                     pos_idx = random.choice(candidates)
-                    # Don't pick self if possible
-                    if pos_idx == idx and len(candidates) > 1:
-                        while pos_idx == idx:
-                            pos_idx = random.choice(candidates)
-                    found_match = True
-
-        # Strategy B: Vienna Match (40% -> if in 0.4-0.8 range)
-        if not found_match and strategy < 0.8:
+                    
+        # Strategy B: Vienna Match (40%)
+        elif choice < 0.8:
             codes = item.get('vienna_codes', [])
-            # Filter to codes that actually have matches
             valid_codes = [c for c in codes if c in self.vienna_to_indices and len(self.vienna_to_indices[c]) > 1]
             if valid_codes:
                 code = random.choice(valid_codes)
                 candidates = self.vienna_to_indices[code]
                 pos_idx = random.choice(candidates)
-                if pos_idx == idx and len(candidates) > 1:
-                    while pos_idx == idx:
-                        pos_idx = random.choice(candidates)
-                found_match = True
-        
+
         # Strategy C: Self-Augmentation (20% or fallback)
         # pos_idx stays as idx
         
         # 3. Load Positive
         if pos_idx == idx:
-            img2 = img1.copy()
+            img_k = img_q 
         else:
-            pos_path = self._load_image(pos_idx)
-            if pos_path:
-                prep2 = self.pipeline.process_on_the_fly(pos_path)
-                if prep2:
-                    img2 = Image.fromarray(prep2.normalized)
-                else:
-                    img2 = img1.copy() # Fallback
-            else:
-                img2 = img1.copy() # Fallback
-
+            img_k = self._load_and_preprocess(pos_idx)
+            if img_k is None:
+                img_k = img_q # Fallback
+        
         # 4. Augment
         if self.transform:
-            view1 = self.transform(img1)
-            view2 = self.transform(img2)
-        else:
-            ts = transforms.ToTensor()
-            view1 = ts(img1)
-            view2 = ts(img2)
+            q = self.transform(img_q)
+            k = self.transform(img_k)
+            return q, k
             
-        return view1, view2
+        # Fallback transforms if none provided
+        ts = transforms.ToTensor()
+        return ts(img_q), ts(img_k)
 
 
 # --- 2. Training Script ---
@@ -205,13 +206,21 @@ def train_semantic_alignment():
     transform = get_moco_augmentations(settings.IMG_SIZE)
     dataset = SemanticAlignmentDataset(metadata, transform=transform)
     
+    
+    # Optimize Data Loading Hardware Usage
+    num_cpus = os.cpu_count() or 8
+    num_workers = min(32, num_cpus) # Cap at 32
+    logger.info(f"Using {num_workers} DataLoader workers (detected {num_cpus} CPUs)")
+
     loader = DataLoader(
         dataset, 
         batch_size=args.batch_size, 
         shuffle=True, 
-        num_workers=8,
+        num_workers=num_workers,
         pin_memory=True, 
-        drop_last=True
+        drop_last=True,
+        persistent_workers=True, # Keep workers alive between epochs
+        prefetch_factor=2        # Buffer batches
     )
     
     # 2. Load Model

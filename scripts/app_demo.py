@@ -49,26 +49,43 @@ def load_pipeline():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 1. Embedder
+    # 1. Embedder
     try:
-        checkpoint_path = paths.CHECKPOINTS_DIR / "best_model.pth"
-        if not checkpoint_path.exists():
-            checkpoint_path = paths.CHECKPOINTS_DIR / "latest.pth"
+        # Priority: Semantic Test Model -> Best Model -> Latest Model -> Pretrained
+        ckpt_path = None
+        possible_ckpts = [
+            paths.CHECKPOINTS_DIR / "semantic_v1_epoch1.pth",  # Test Model
+            paths.CHECKPOINTS_DIR / "best_model.pth",
+            paths.CHECKPOINTS_DIR / "latest.pth"
+        ]
+        
+        for p in possible_ckpts:
+            if p.exists():
+                ckpt_path = p
+                break
+        
         embedder = EfficientNetEmbedder().to(device)
         
-        if checkpoint_path.exists():
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        if ckpt_path and ckpt_path.exists():
+            status.text(f"Loading checkpoint: {ckpt_path.name}...")
+            checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+            
             state_dict = checkpoint['model_state_dict']
             new_state_dict = {}
             for k, v in state_dict.items():
+                # Clean MoCo prefixes
                 if k.startswith('encoder_q.'):
                     new_state_dict[k.replace('encoder_q.', '')] = v
+                elif k.startswith('module.encoder_q.'): # Multi-GPU case
+                    new_state_dict[k.replace('module.encoder_q.', '')] = v
                 else:
                     new_state_dict[k] = v
+                    
             embedder.load_state_dict(new_state_dict, strict=False)
             embedder.eval()
-            st.success(f"Loaded checkpoint: {checkpoint_path.name}")
+            st.success(f"✅ Loaded checkpoint: **{ckpt_path.name}**")
         else:
-            st.warning("Checkpoint not found. Using pretrained ImageNet weights.")
+            st.warning("⚠️ Checkpoint not found. Using pretrained ImageNet weights.")
     except Exception as e:
         st.error(f"Failed to load embedder: {e}")
         return None

@@ -26,14 +26,16 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "joblib",
-    "faiss-gpu",
+    "faiss-cpu",
     "fastapi",
     "uvicorn[standard]",
     "python-multipart",
     "loguru",
     "tqdm",
     "pydantic",
-    "pydantic-settings"
+    "pydantic-settings",
+    "kaggle",
+    "python-dotenv"
 ]
 
 [project.optional-dependencies]
