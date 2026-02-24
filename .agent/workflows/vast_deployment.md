@@ -12,6 +12,9 @@ Ensure you have the `vast_server` key generated:
 # Generated earlier in the conversation
 # Key resides at ~/.ssh/vast_server
 ```
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAMvBOZuH4KgvSfZADWLCMubUpntWsFvdAvqM0g5cpvu phuoc@Phuoc-PC
+```
 
 ## 2. Connect to the VPS
 Replace `PORT` and `IP_ADDRESS` with the details from your Vast.ai instance:

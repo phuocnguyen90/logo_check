@@ -33,3 +33,4 @@ kaggle
 python-dotenv
 efficientnet_pytorch
 cv2
+kagglehub

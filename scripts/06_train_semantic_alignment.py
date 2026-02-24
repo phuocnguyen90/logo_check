@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Tuple
 from torchvision import transforms
 from PIL import Image
 from collections import defaultdict
+from pathlib import Path
 
 from logo_similarity.config import settings, paths
 from logo_similarity.utils.logging import logger
@@ -136,8 +137,9 @@ class SemanticAlignmentDataset(torch.utils.data.Dataset):
         choice = random.random()
         pos_idx = idx 
         
-        # Strategy A: Text Match (40%)
-        if choice < 0.4:
+        # Strategy A: Text Match (25%)
+        # Reduced from 40% to prevent OCR overfitting
+        if choice < 0.25:
             raw_text = item.get('text')
             txt = raw_text.lower().strip() if raw_text else ""
             if txt and txt in self.text_to_indices:
@@ -145,8 +147,9 @@ class SemanticAlignmentDataset(torch.utils.data.Dataset):
                 if len(candidates) > 1:
                     pos_idx = random.choice(candidates)
                     
-        # Strategy B: Vienna Match (40%)
-        elif choice < 0.8:
+        # Strategy B: Vienna Match (45%)
+        # Increased to emphasize shape/concept
+        elif choice < 0.70:
             codes = item.get('vienna_codes', [])
             valid_codes = [c for c in codes if c in self.vienna_to_indices and len(self.vienna_to_indices[c]) > 1]
             if valid_codes:

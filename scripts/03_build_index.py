@@ -1,5 +1,7 @@
 import os
 import json
+import shutil
+from datetime import datetime
 import argparse
 import torch
 import numpy as np
@@ -22,12 +24,34 @@ def build_index():
     """
     parser = argparse.ArgumentParser(description="Build global embedding index.")
     parser.add_argument("--toy", action="store_true", help="Run on toy dataset (pilot mode)")
-    parser.add_argument("--workers", type=int, default=8, help="Number of data loader workers")
-    parser.add_argument("--batch-size", type=int, default=128, help="Inference batch size")
+    parser.add_argument("--workers", type=int, default=16, help="Number of data loader workers")
+    parser.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to trained model checkpoint")
+    parser.add_argument("--force", action="store_true", help="Force rebuild (delete existing chunks)")
+    parser.add_argument("--gpu-index", action="store_true", help="Use GPU for FAISS index (faster search)")
     args = parser.parse_args()
 
+    # Determine model-specific output directory
+    if args.checkpoint:
+        ckpt_stem = Path(args.checkpoint).stem
+        index_output_dir = paths.INDEXES_DIR / "embeddings" / ckpt_stem
+    else:
+        index_output_dir = paths.EMBEDDING_INDEX_DIR
+
+    index_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Force rebuild: clear existing data
+    if args.force:
+        chunks_dir = index_output_dir / "chunks"
+        if chunks_dir.exists():
+            shutil.rmtree(chunks_dir)
+            logger.info("Cleared existing chunks for forced rebuild.")
+        for f in [index_output_dir / "faiss_index.bin", index_output_dir / "id_map.json"]:
+            if f.exists():
+                f.unlink()
+
     logger.info("Starting index building process...")
+    logger.info(f"Index output directory: {index_output_dir}")
     
     # 1. Initialization
     metadata_path = paths.TOY_DATASET_METADATA if args.toy else paths.DATASET_METADATA
@@ -73,7 +97,7 @@ def build_index():
     
     # Chunking and Checkpointing
     chunk_size = 5000
-    checkpoint_dir = paths.EMBEDDING_INDEX_DIR / "chunks"
+    checkpoint_dir = index_output_dir / "chunks"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # 2. Resumability Check
@@ -107,7 +131,9 @@ def build_index():
         shuffle=False, 
         num_workers=args.workers, 
         pin_memory=True,
-        drop_last=False
+        drop_last=False,
+        prefetch_factor=4,
+        persistent_workers=True if args.workers > 0 else False
     )
     
     # 4. Batch Processing
@@ -244,7 +270,17 @@ def build_index():
     
     # Phase 2b: Build FAISS Index
     logger.info(f"Building FAISS index (dim={final_dim})...")
-    store = VectorStore(dimension=final_dim, index_type="hnsw")
+    
+    # HNSW is CPU only in FAISS, but for 770k images, we might want 
+    # a GPU-compatible index type if requested.
+    idx_type = "hnsw"
+    if args.gpu_index:
+        idx_type = "cosine" # FlatIP is very fast on GPU
+        
+    store = VectorStore(dimension=final_dim, index_type=idx_type)
+    
+    # If using GPU index, the VectorStore search() will need to handle GPU resources
+    # but build_index add() is standard.
     
     full_id_list = []
     
@@ -269,12 +305,24 @@ def build_index():
             
             full_id_list.extend(ids.tolist())
             
-    store.save(paths.EMBEDDING_INDEX_DIR / "faiss_index.bin")
+    store.save(index_output_dir / "faiss_index.bin")
     
     # Save ID mapping
-    with open(paths.EMBEDDING_INDEX_DIR / "id_map.json", "w") as f:
+    with open(index_output_dir / "id_map.json", "w") as f:
         json.dump(full_id_list, f)
-        
+
+    # Save build metadata for the demo app
+    build_metadata = {
+        "checkpoint": args.checkpoint or "none (ImageNet default)",
+        "total_images": len(full_id_list),
+        "built_at": datetime.now().isoformat(),
+        "use_pca": settings.USE_PCA,
+        "embedding_dim": final_dim,
+        "toy": args.toy,
+    }
+    with open(index_output_dir / "build_metadata.json", "w") as f:
+        json.dump(build_metadata, f, indent=2)
+
     logger.info(f"Index building complete with {len(full_id_list)} vectors!")
 
 if __name__ == "__main__":

@@ -74,6 +74,16 @@ class VectorStore:
         try:
             self.index = faiss.read_index(str(path))
             self.dimension = self.index.d
+            
+            # Try to move to GPU if available and requested
+            try:
+                if hasattr(faiss, 'get_num_gpus') and faiss.get_num_gpus() > 0:
+                    res = faiss.StandardGpuResources()
+                    self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+                    logger.info(f"Moved FAISS index to GPU 0")
+            except Exception as e:
+                logger.warning(f"Could not move FAISS index to GPU: {e}")
+                
             logger.info(f"Loaded FAISS index from {path} (size={self.index.ntotal})")
         except Exception as e:
             logger.error(f"Failed to load index from {path}: {e}")

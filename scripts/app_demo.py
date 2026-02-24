@@ -1,3 +1,9 @@
+"""
+Logo Similarity Retrieval & Evaluation Demo
+
+Supports per-model FAISS indexes for evaluating different training checkpoints.
+Each checkpoint gets its own index at indexes/embeddings/{checkpoint_stem}/.
+"""
 import streamlit as st
 import numpy as np
 import json
@@ -7,6 +13,8 @@ from pathlib import Path
 from PIL import Image
 import os
 import sys
+import subprocess
+import time
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -19,189 +27,387 @@ from logo_similarity.reranking.reranker import ReRanker
 from logo_similarity.reranking.composite_scorer import CompositeScoringPipeline
 from logo_similarity.preprocessing.pipeline import PreprocessingPipeline
 
-# --- Helper: Torch Safe Globals ---
+# --- Torch Safe Globals ---
 try:
     import torch.serialization
-    import numpy as np
     torch.serialization.add_safe_globals([
         np.core.multiarray.scalar,
         np._core.multiarray.scalar if hasattr(np, '_core') else np.core.multiarray.scalar,
         np.float64, np.int64
     ])
-except Exception as e:
+except Exception:
     pass
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Logo Similarity Demo",
+    page_title="Logo Similarity Evaluation",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 st.title("🔍 Logo Similarity Retrieval Pipeline")
 
-# --- Resource Loading (Cached) ---
+
+# =================================================================
+# Helper Functions
+# =================================================================
+
+def get_index_dir(checkpoint_name: str) -> Path:
+    """Get model-specific index directory."""
+    stem = Path(checkpoint_name).stem
+    return paths.INDEXES_DIR / "embeddings" / stem
+
+
+def has_index(checkpoint_name: str) -> bool:
+    """Check if a FAISS index exists for the given model."""
+    d = get_index_dir(checkpoint_name)
+    return (d / "faiss_index.bin").exists() and (d / "id_map.json").exists()
+
+
+# =================================================================
+# Cached Resource Loaders
+# =================================================================
+
 @st.cache_resource
-def load_pipeline():
-    status = st.empty()
-    status.write("Loading pipeline components...")
-    
+def load_embedder(checkpoint_name: str):
+    """Load EfficientNet embedder with MoCo checkpoint weights."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # 1. Embedder
-    # 1. Embedder
-    try:
-        # Priority: Semantic Test Model -> Best Model -> Latest Model -> Pretrained
-        ckpt_path = None
-        possible_ckpts = [
-            paths.CHECKPOINTS_DIR / "semantic_v1_epoch1.pth",  # Test Model
-            paths.CHECKPOINTS_DIR / "best_model.pth",
-            paths.CHECKPOINTS_DIR / "latest.pth"
-        ]
-        
-        for p in possible_ckpts:
-            if p.exists():
-                ckpt_path = p
-                break
-        
-        embedder = EfficientNetEmbedder().to(device)
-        
-        if ckpt_path and ckpt_path.exists():
-            status.text(f"Loading checkpoint: {ckpt_path.name}...")
-            checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-            
-            state_dict = checkpoint['model_state_dict']
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                # Clean MoCo prefixes
-                if k.startswith('encoder_q.'):
-                    new_state_dict[k.replace('encoder_q.', '')] = v
-                elif k.startswith('module.encoder_q.'): # Multi-GPU case
-                    new_state_dict[k.replace('module.encoder_q.', '')] = v
-                else:
-                    new_state_dict[k] = v
-                    
+    embedder = EfficientNetEmbedder().to(device)
+    ckpt_path = paths.CHECKPOINTS_DIR / checkpoint_name
+
+    if ckpt_path.exists():
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('encoder_q.'):
+                new_state_dict[k.replace('encoder_q.', '')] = v
+            elif k.startswith('module.encoder_q.'):
+                new_state_dict[k.replace('module.encoder_q.', '')] = v
+
+        if new_state_dict:
             embedder.load_state_dict(new_state_dict, strict=False)
-            embedder.eval()
-            st.success(f"✅ Loaded checkpoint: **{ckpt_path.name}**")
         else:
-            st.warning("⚠️ Checkpoint not found. Using pretrained ImageNet weights.")
-    except Exception as e:
-        st.error(f"Failed to load embedder: {e}")
-        return None
+            st.warning(f"No 'encoder_q' keys in {checkpoint_name}. Using ImageNet defaults.")
 
-    # 2. Vector Store
-    try:
-        index_path = paths.EMBEDDING_INDEX_DIR / "faiss_index.bin"
-        id_map_path = paths.EMBEDDING_INDEX_DIR / "id_map.json"
-        
-        index_dim = 1280 if not settings.USE_PCA else settings.REDUCED_DIM
-        store = VectorStore(dimension=index_dim, index_type="hnsw")
-        if index_path.exists():
-            store.load(index_path)
-        
-        if id_map_path.exists():
-            with open(id_map_path, "r") as f:
-                full_id_list = json.load(f)
-        else:
-            full_id_list = []
-    except Exception as e:
-        st.error(f"Failed to load index: {e}")
-        return None
+        embedder.eval()
+    else:
+        st.error(f"Checkpoint not found: {ckpt_path}")
 
-    # 3. Metadata
-    try:
-        metadata_path = paths.DATASET_METADATA
-        if not metadata_path.exists():
-            metadata_path = paths.TOY_DATASET_METADATA
-            
-        with open(metadata_path, "r") as f:
-            metadata_list = json.load(f)
-            
-        metadata_map = {}
-        for item in metadata_list:
-            key = item.get('image') or item.get('file')
-            if key:
-                metadata_map[key] = item
-    except Exception as e:
-        st.error(f"Failed to load metadata: {e}")
-        return None
+    return embedder, device
 
-    # 4. Pipeline Modules
-    reranker = ReRanker(embedder)
-    composite_pipeline = CompositeScoringPipeline()
-    preprocessing = PreprocessingPipeline(config={'skip_text_removal': True})
-    
-    # 5. PCA Reduction
-    reducer = None
-    if settings.USE_PCA:
-        from logo_similarity.embeddings.pca_reducer import PCAReducer
-        pca_path = paths.MODELS_DIR / "pca_model.joblib"
-        if pca_path.exists():
-            reducer = PCAReducer.load(pca_path)
 
-    status.empty()
-    return embedder, store, full_id_list, metadata_map, reranker, composite_pipeline, preprocessing, reducer, device
+@st.cache_resource
+def load_index(checkpoint_name: str):
+    """Load model-specific FAISS index."""
+    d = get_index_dir(checkpoint_name)
+    idx_path = d / "faiss_index.bin"
+    map_path = d / "id_map.json"
 
-# Load
-pipeline = load_pipeline()
+    if not idx_path.exists() or not map_path.exists():
+        return None, []
 
-if not pipeline:
+    dim = 1280 if not settings.USE_PCA else settings.REDUCED_DIM
+    store = VectorStore(dimension=dim, index_type="hnsw")
+    store.load(idx_path)
+
+    with open(map_path, "r") as f:
+        id_list = json.load(f)
+
+    return store, id_list
+
+
+@st.cache_resource
+def load_metadata():
+    """Load dataset metadata."""
+    meta_path = paths.DATASET_METADATA
+    if not meta_path.exists():
+        meta_path = paths.TOY_DATASET_METADATA
+    if not meta_path.exists():
+        return {}
+
+    with open(meta_path, "r") as f:
+        items = json.load(f)
+
+    return {(m.get('image') or m.get('file')): m for m in items if m.get('image') or m.get('file')}
+
+
+@st.cache_resource
+def load_validation_pairs():
+    """Load validation pairs."""
+    p = paths.TOY_VALIDATION_DIR / "similar_pairs.json"
+    if p.exists():
+        with open(p, "r") as f:
+            return json.load(f)
+    return []
+
+
+# =================================================================
+# Sidebar — Model & Index
+# =================================================================
+st.sidebar.header("⚙️ Configuration")
+
+avail_models = sorted([f.name for f in paths.CHECKPOINTS_DIR.glob("*.pth")])
+if not avail_models:
+    st.error("No model checkpoints found in " + str(paths.CHECKPOINTS_DIR))
     st.stop()
 
-embedder, store, full_id_list, metadata_map, reranker, composite_pipeline, preprocessing, reducer, device = pipeline
+# Pick a sensible default
+default_idx = 0
+for i, name in enumerate(avail_models):
+    if "semantic" in name and "latest" in name:
+        default_idx = i
+        break
+    elif "best" in name:
+        default_idx = i
 
-# --- Sidebar Controls ---
-st.sidebar.header("Configuration")
-mode = st.sidebar.radio("Input Mode", ["Toy Validation Pair", "Raw Image ID", "Upload Image"])
+selected_model = st.sidebar.selectbox("Model Checkpoint", avail_models, index=default_idx)
 
+# --- Index Status ---
+index_ready = has_index(selected_model)
+idx_dir = get_index_dir(selected_model)
+
+if index_ready:
+    st.sidebar.success("✅ Index ready")
+    meta_file = idx_dir / "build_metadata.json"
+    if meta_file.exists():
+        with open(meta_file) as f:
+            bm = json.load(f)
+        st.sidebar.caption(
+            f"📁 {bm.get('total_images', '?')} vectors · "
+            f"Built {bm.get('built_at', '?')[:16]}"
+        )
+else:
+    st.sidebar.warning("⚠️ No index for this model")
+    st.sidebar.caption("Build one before running retrieval.")
+
+    use_toy = st.sidebar.checkbox("Toy dataset (faster)", value=True)
+    build_bs = st.sidebar.select_slider("Build Batch Size (GPU)", options=[64, 128, 256, 512, 1024, 2048], value=512)
+    build_workers = st.sidebar.slider("Build Workers (CPU)", 1, 32, 16)
+
+    if st.sidebar.button("🔨 Build Index", type="primary"):
+        # Use subprocess for indexing to enable multi-processing and resumability
+        # This is much faster for the full 770k image dataset.
+        from datetime import datetime
+        
+        log_box = st.empty()
+        project_root = str(Path(__file__).resolve().parent.parent)
+        env = os.environ.copy()
+        env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+        
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "03b_fast_index.py"),
+            "--checkpoint", str(paths.CHECKPOINTS_DIR / selected_model),
+            "--batch-size", str(build_bs),
+            "--workers", str(build_workers)
+        ]
+        if use_toy:
+            cmd.append("--toy")
+
+        with st.spinner(f"Building index (Multiprocessing ON)..."):
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, cwd=project_root, env=env
+            )
+            
+            lines = []
+            for line in proc.stdout:
+                lines.append(line.rstrip())
+                # Show last 20 lines of logs
+                log_box.code('\n'.join(lines[-20:]), language="text")
+            proc.wait()
+
+        if proc.returncode == 0:
+            st.success("✅ Index built! Reloading…")
+            st.cache_resource.clear()
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(f"❌ Build failed (code {proc.returncode})")
+            st.caption("Check terminal/logs for details. Common issues: OOM or path errors.")
+
+    st.stop()   # Block rest of app until index exists
+
+
+# =================================================================
+# Load Resources
+# =================================================================
+embedder, device = load_embedder(selected_model)
+store, full_id_list = load_index(selected_model)
+metadata_map = load_metadata()
+
+if store is None:
+    st.error("Failed to load FAISS index.")
+    st.stop()
+
+preprocessing = PreprocessingPipeline(config={'skip_text_removal': True})
+reranker = ReRanker(embedder)
+composite_pipeline = CompositeScoringPipeline()
+
+reducer = None
+if settings.USE_PCA:
+    from logo_similarity.embeddings.pca_reducer import PCAReducer
+    pca_path = paths.MODELS_DIR / "pca_model.joblib"
+    if pca_path.exists():
+        reducer = PCAReducer.load(pca_path)
+
+
+# =================================================================
+# Sidebar — Evaluation Mode
+# =================================================================
+st.sidebar.markdown("---")
+st.sidebar.header("🎯 Evaluation")
+mode = st.sidebar.radio(
+    "Mode",
+    ["Toy Validation Pair", "Raw Image ID", "Upload Image", "📊 Batch Evaluate"]
+)
 top_k_global = st.sidebar.slider("Stage 1 (Global) Candidates", 100, 1000, 500)
 top_k_rerank = st.sidebar.slider("Stage 2 (Spatial) Candidates", 10, 100, 50)
 
-# --- Input Handling ---
+
+# =================================================================
+# Helper: Embed a single image
+# =================================================================
+def embed_query(img_path: str):
+    """Preprocess and embed a query image. Returns (preprocessed, q_search) or (None, None)."""
+    preprocessed = preprocessing.process_on_the_fly(img_path)
+    if preprocessed is None:
+        return None, None
+
+    q_emb = embedder.get_embedding(preprocessed.normalized, device=device)
+    if reducer:
+        q_search = reducer.transform(q_emb.reshape(1, -1))
+    else:
+        q_search = q_emb.reshape(1, -1)
+
+    return preprocessed, q_search
+
+
+# =================================================================
+# BATCH EVALUATE MODE
+# =================================================================
+if mode == "📊 Batch Evaluate":
+    st.subheader(f"📊 Batch Evaluation — `{selected_model}`")
+
+    pairs = load_validation_pairs()
+    if not pairs:
+        st.warning("No validation pairs found.")
+        st.stop()
+
+    st.info(f"**{len(pairs)}** validation pairs available.")
+
+    if st.button("▶️ Run Batch Evaluation", type="primary"):
+        progress = st.progress(0, text="Starting…")
+        results = []
+
+        for i, pair in enumerate(pairs):
+            q_name, t_name = pair['image1'], pair['image2']
+
+            # Resolve query path
+            q_path = paths.RAW_DATASET_DIR / "images" / q_name
+            if not q_path.exists():
+                q_path = paths.RAW_DATASET_DIR / q_name
+
+            if not q_path.exists():
+                results.append(dict(query=q_name, target=t_name, found=False, rank=-1, score=0, error="missing"))
+                continue
+
+            preprocessed, q_search = embed_query(str(q_path))
+            if preprocessed is None:
+                results.append(dict(query=q_name, target=t_name, found=False, rank=-1, score=0, error="preproc"))
+                continue
+
+            distances, indices = store.search(q_search, k=top_k_global)
+
+            found, rank, score = False, -1, 0.0
+            for j, (d, idx) in enumerate(zip(distances, indices)):
+                if idx == -1:
+                    continue
+                if full_id_list[idx] == t_name:
+                    found, rank, score = True, j + 1, float(d)
+                    break
+
+            results.append(dict(query=q_name, target=t_name, found=found, rank=rank, score=score, error=None))
+            progress.progress((i + 1) / len(pairs), text=f"Evaluated {i+1}/{len(pairs)}")
+
+        progress.empty()
+
+        # --- Metrics ---
+        valid = [r for r in results if r['error'] is None]
+        found_list = [r for r in valid if r['found']]
+
+        st.markdown("---")
+        st.subheader("📈 Results")
+
+        k_values = [k for k in [1, 5, 10, 50, 100, 500] if k <= top_k_global]
+        recalls = {f"R@{k}": sum(1 for r in valid if r['found'] and r['rank'] <= k) / max(len(valid), 1) for k in k_values}
+
+        mrr = sum(1.0 / r['rank'] for r in found_list) / max(len(valid), 1)
+
+        cols = st.columns(len(recalls) + 2)
+        cols[0].metric("Pairs", f"{len(valid)}/{len(results)}")
+        cols[1].metric("MRR", f"{mrr:.4f}")
+        for i, (label, val) in enumerate(recalls.items()):
+            cols[i + 2].metric(label, f"{val:.1%}")
+
+        if found_list:
+            ranks = [r['rank'] for r in found_list]
+            st.caption(
+                f"Found: {len(found_list)}/{len(valid)} · "
+                f"Mean Rank: {np.mean(ranks):.1f} · "
+                f"Median: {np.median(ranks):.0f} · "
+                f"Best/Worst: {min(ranks)}/{max(ranks)}"
+            )
+
+        with st.expander("📋 Per-Pair Details", expanded=False):
+            import pandas as pd
+            df = pd.DataFrame(results)
+            df['rank'] = df['rank'].apply(lambda x: x if x > 0 else 'N/A')
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.stop()
+
+
+# =================================================================
+# SINGLE QUERY MODE
+# =================================================================
 query_img_path = None
 query_img_name = "Upload"
 target_img_name = None
 
 if mode == "Toy Validation Pair":
-    toy_val_path = paths.TOY_VALIDATION_DIR / "similar_pairs.json"
-    if toy_val_path.exists():
-        with open(toy_val_path, "r") as f:
-            pairs = json.load(f)
-        
-        pair_options = [f"Pair {i}: {p['image1']} -> {p['image2']}" for i, p in enumerate(pairs)]
-        selected_pair_idx = st.sidebar.selectbox("Select Pair", range(len(pairs)), format_func=lambda x: pair_options[x])
-        
-        pair = pairs[selected_pair_idx]
+    pairs = load_validation_pairs()
+    if pairs:
+        pair_opts = [f"Pair {i}: {p['image1']} -> {p['image2']}" for i, p in enumerate(pairs)]
+        sel = st.sidebar.selectbox("Select Pair", range(len(pairs)), format_func=lambda x: pair_opts[x])
+        pair = pairs[sel]
         query_img_name = pair['image1']
         target_img_name = pair['image2']
-        
-        # Check path
-        query_path = paths.RAW_DATASET_DIR / "images" / query_img_name
-        if not query_path.exists():
-            query_path = paths.RAW_DATASET_DIR / query_img_name
-        
-        if query_path.exists():
-            query_img_path = str(query_path)
+
+        qp = paths.RAW_DATASET_DIR / "images" / query_img_name
+        if not qp.exists():
+            qp = paths.RAW_DATASET_DIR / query_img_name
+        if qp.exists():
+            query_img_path = str(qp)
         else:
-            st.error(f"Image not found locally: {query_path}")
+            st.error(f"Image not found: {qp}")
 
 elif mode == "Raw Image ID":
     query_img_name = st.sidebar.text_input("Enter Image Filename (e.g., uuid.jpg)")
     if query_img_name:
-        query_path = paths.RAW_DATASET_DIR / "images" / query_img_name
-        if not query_path.exists():
-            query_path = paths.RAW_DATASET_DIR / query_img_name
-        
-        if query_path.exists():
-            query_img_path = str(query_path)
+        qp = paths.RAW_DATASET_DIR / "images" / query_img_name
+        if not qp.exists():
+            qp = paths.RAW_DATASET_DIR / query_img_name
+        if qp.exists():
+            query_img_path = str(qp)
         else:
             st.error("File not found on disk.")
 
 elif mode == "Upload Image":
     uploaded = st.sidebar.file_uploader("Upload Query Image", type=["jpg", "png", "jpeg"])
     if uploaded:
-        # Save temp
         temp_dir = Path("temp_uploads")
         temp_dir.mkdir(exist_ok=True)
         query_img_path = str(temp_dir / uploaded.name)
@@ -215,7 +421,7 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.subheader("Query Image")
     if query_img_path:
-        st.image(query_img_path, width='stretch')
+        st.image(query_img_path, use_container_width=True)
         if target_img_name:
             st.caption(f"Target: {target_img_name}")
     else:
@@ -224,86 +430,70 @@ with col1:
 with col2:
     if query_img_path and st.button("Run Retrieval", type="primary"):
         with st.spinner("Processing Pipeline..."):
-            # A. Preprocessing
-            preprocessed = preprocessing.process_on_the_fly(query_img_path)
-            if not preprocessed:
+            preprocessed, q_search = embed_query(query_img_path)
+            if preprocessed is None:
                 st.error("Preprocessing failed.")
                 st.stop()
-                
-            # B. Stage 1 Global Search
-            q_emb = embedder.get_embedding(preprocessed.normalized, device=device)
-            
-            if reducer:
-                q_search = reducer.transform(q_emb.reshape(1, -1))
-            else:
-                q_search = q_emb.reshape(1, -1)
-                
+
+            # Stage 1 — Global Search
             distances, indices = store.search(q_search, k=top_k_global)
-            
+
             candidates = []
             found_target = False
-            
             for i, (dist, idx) in enumerate(zip(distances, indices)):
-                if idx == -1: continue
+                if idx == -1:
+                    continue
                 img_name = full_id_list[idx]
-                
-                # Resolve path
                 cand_path = paths.RAW_DATASET_DIR / "images" / img_name
                 if not cand_path.exists():
                     cand_path = paths.RAW_DATASET_DIR / img_name
-                
+
                 candidates.append({
                     "image": img_name,
                     "path": str(cand_path),
                     "global_score": float(dist),
                     "metadata": metadata_map.get(img_name, {})
                 })
-                
                 if img_name == target_img_name:
                     found_target = True
 
             st.write(f"Stage 1 found {len(candidates)} candidates.")
             if target_img_name:
-                 if found_target:
-                     rank = next((i for i, c in enumerate(candidates) if c['image'] == target_img_name), -1)
-                     st.success(f"Target found in Top {top_k_global} at Rank {rank+1}")
-                 else:
-                     st.warning(f"Target NOT found in Top {top_k_global}")
+                if found_target:
+                    rank = next((j for j, c in enumerate(candidates) if c['image'] == target_img_name), -1)
+                    st.success(f"Target found at Rank {rank + 1}")
+                else:
+                    st.warning(f"Target NOT found in Top {top_k_global}")
 
-            # C. Stage 2 Re-ranking
-            refined_candidates = reranker.rerank_candidates(
-                preprocessed.normalized,
-                candidates,
-                top_k=top_k_rerank
+            # Stage 2 — Re-ranking
+            refined = reranker.rerank_candidates(
+                preprocessed.normalized, candidates, top_k=top_k_rerank
             )
-            
-            # D. Stage 5 Composition
-            final_candidates = composite_pipeline.score_results(
+
+            # Stage 3 — Composite Scoring
+            final = composite_pipeline.score_results(
                 metadata_map.get(query_img_name, {}),
                 preprocessed.original,
-                refined_candidates
+                refined
             )
-            
+
             # --- Results Display ---
             st.subheader("Top Results")
-            
-            results_cols = st.columns(3)
-            for i, cand in enumerate(final_candidates[:9]):
-                col = results_cols[i % 3]
+            rcols = st.columns(3)
+            for i, cand in enumerate(final[:9]):
+                col = rcols[i % 3]
                 with col:
-                    # Load image
                     if os.path.exists(cand['path']):
-                        st.image(cand['path'], width='stretch')
+                        st.image(cand['path'], use_container_width=True)
                     else:
                         st.warning("Image missing")
-                        
-                    color = "green" if cand['image'] == target_img_name else "black"
+
                     st.markdown(f"**#{i+1}: {cand['image']}**")
                     if cand['image'] == target_img_name:
                         st.metric("Final Score", f"{cand['final_score']:.3f}", delta="TARGET")
                     else:
                         st.write(f"Score: **{cand['final_score']:.3f}**")
-                        
+
                     with st.expander("Details"):
                         st.write(f"Global: {cand.get('global_score',0):.3f}")
                         st.write(f"Spatial: {cand.get('spatial_score',0):.3f}")
