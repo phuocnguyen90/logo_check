@@ -78,7 +78,8 @@ class VectorStore:
         try:
             if use_mmap:
                 logger.info(f"Using MMAP for FAISS index: {path}")
-                self.index = faiss.read_index(str(path), faiss.IO_FLAG_MMAP)
+                # Use MMAP + READ_ONLY for maximum memory efficiency on VPS/Railway
+                self.index = faiss.read_index(str(path), faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY)
             else:
                 self.index = faiss.read_index(str(path))
             

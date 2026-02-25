@@ -15,6 +15,12 @@ class ONNXInference:
     
     def __init__(self, model_path: str, pca_path: Optional[str] = None):
         try:
+            # Configure Session Options for memory efficiency
+            sess_options = ort.SessionOptions()
+            sess_options.enable_mem_pattern = True # Enable memory pattern optimization
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.add_session_config_entry("session.intra_op_thread_pool_size", "1")
+            
             # Smart provider selection: try CUDA first, fallback to CPU
             available_providers = ort.get_available_providers()
             
@@ -23,12 +29,12 @@ class ONNXInference:
                 preferred_providers.append(('CUDAExecutionProvider', {
                     'device_id': 0,
                     'arena_extend_strategy': 'kNextPowerOfTwo',
-                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024, # 2GB limit for VPS safety
+                    'gpu_mem_limit': 1 * 1024 * 1024 * 1024, # Reduced to 1GB for safety
                 }))
             
             preferred_providers.append('CPUExecutionProvider')
             
-            self.session = ort.InferenceSession(model_path, providers=preferred_providers)
+            self.session = ort.InferenceSession(model_path, sess_options=sess_options, providers=preferred_providers)
             self.input_name = self.session.get_inputs()[0].name
             
             # Load PCA if provided
