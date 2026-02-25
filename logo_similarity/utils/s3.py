@@ -3,15 +3,18 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from loguru import logger
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class S3Service:
     def __init__(self):
-        self.endpoint = os.getenv("MINIO_HOST")
-        self.access_key = os.getenv("MINIO_USERNAME")
-        self.secret_key = os.getenv("MINIO_PASSWORD")
+        # Prefer Railway vars if provided, otherwise fallback to MinIO
+        self.endpoint = os.getenv("RAILWAY_BUCKET_URL") or os.getenv("MINIO_HOST")
+        self.access_key = os.getenv("RAILWAY_ACCESS_ID") or os.getenv("MINIO_USERNAME")
+        self.secret_key = os.getenv("RAILWAY_ACCESS_KEY") or os.getenv("MINIO_PASSWORD")
+        
         self.region = "us-east-1"
         
         if not all([self.endpoint, self.access_key, self.secret_key]):
@@ -41,6 +44,18 @@ class S3Service:
             return True
         except ClientError as e:
             logger.error(f"Error uploading file: {e}")
+            return False
+
+    def download_file(self, bucket, object_name, local_file_path):
+        """Download a file from an S3 bucket to a local path"""
+        try:
+            # Ensure parent directory exists
+            Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
+            self.client.download_file(bucket, object_name, str(local_file_path))
+            logger.info(f"Successfully downloaded {object_name} from {bucket} to {local_file_path}")
+            return True
+        except ClientError as e:
+            logger.error(f"Error downloading file: {e}")
             return False
 
     def get_presigned_url(self, bucket, object_name, expiration=3600):
