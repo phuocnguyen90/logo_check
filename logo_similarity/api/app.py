@@ -17,11 +17,13 @@ from ..retrieval.vector_store import VectorStore
 
 app = FastAPI(title="Logo Similarity Production API", version="1.0.0")
 
+import sqlite3
+
 class APIContext:
     def __init__(self):
         self.inference = None
         self.vector_store = None
-        self.id_map = []
+        self.id_map_db = None
         self.db_path = Path("data/metadata.db")
         # Priority: RAILWAY_BUCKET_NAME -> MINIO_BUCKET -> 'l3d'
         self.bucket = os.getenv("RAILWAY_BUCKET_NAME") or os.getenv("MINIO_BUCKET", "l3d")
@@ -35,7 +37,7 @@ class APIContext:
         model_path = onnx_dir / "model.onnx"
         pca_path = onnx_dir / "pca_model.joblib"
         index_path = onnx_dir / "vps_index.bin"
-        id_map_path = onnx_dir / "vps_id_map.json"
+        id_map_path = onnx_dir / "vps_id_map.db" # Changed to .db
 
         # Required files to download if missing
         required_files = {
@@ -43,7 +45,7 @@ class APIContext:
             f"models/{ckpt_stem}/model.onnx.data": onnx_dir / "model.onnx.data",
             f"models/{ckpt_stem}/pca_model.joblib": pca_path,
             f"models/{ckpt_stem}/vps_index.bin": index_path,
-            f"models/{ckpt_stem}/vps_id_map.json": id_map_path,
+            f"models/{ckpt_stem}/vps_id_map.db": id_map_path,
         }
 
         # 2. Check and Download from S3/MinIO
@@ -70,15 +72,30 @@ class APIContext:
                 # Initial dim doesn't strictly matter if we use .load() as it overwrites index
                 self.vector_store = VectorStore(256) 
                 self.vector_store.load(str(index_path), use_mmap=True)
-                logger.info(f"✅ Loaded MMAP Index: {index_path} (dim={self.vector_store.dimension})")
+                logger.info(f"✅ Loaded MMAP Index: {index_path}")
                 
                 if id_map_path.exists():
-                    with open(id_map_path, "r") as f:
-                        self.id_map = json.load(f)
+                    self.id_map_db = str(id_map_path)
+                    logger.info(f"✅ Using SQLite ID Map: {id_map_path}")
             except Exception as e:
                 logger.error(f"❌ Failed to load Index: {e}")
         else:
             logger.error(f"❌ Index file missing after initialization: {index_path}")
+
+    def get_filename(self, idx: int) -> str:
+        """Lookup filename from SQLite instead of memory."""
+        if not self.id_map_db:
+            return str(idx)
+        try:
+            conn = sqlite3.connect(self.id_map_db)
+            cursor = conn.cursor()
+            cursor.execute("SELECT filename FROM id_map WHERE id = ?", (int(idx),))
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else str(idx)
+        except Exception as e:
+            logger.error(f"ID lookup failed for {idx}: {e}")
+            return str(idx)
 
 # Global context
 ctx = APIContext()
@@ -112,10 +129,7 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50):
         for d, idx in zip(distances, indices):
             if idx == -1: continue
             
-            if ctx.id_map and idx < len(ctx.id_map):
-                filename = ctx.id_map[idx]
-            else:
-                filename = str(idx)
+            filename = ctx.get_filename(idx)
             
             # S3 lookup (case-insensitive)
             image_key = f"images/{filename.lower()}"
