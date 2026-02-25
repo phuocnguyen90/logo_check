@@ -143,3 +143,5 @@ indexes/embeddings/semantic_v1_semantic_latest/faiss_index.bin
 data/metadata.db
 indexes/embeddings/best_model/faiss_index.bin
 models/onnx/semantic_v1_semantic_epoch_30/pca_model.joblib
+models/onnx/best_model/vps_index.bin
+models/onnx/semantic_v1_semantic_epoch_30/vps_index.bin
