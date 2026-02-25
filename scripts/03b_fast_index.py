@@ -74,8 +74,16 @@ def fast_build_index():
                 chunk_file.unlink()
         
         initial_count = len(metadata)
-        metadata = [m for m in metadata if (m.get('file') or m.get('image')) not in processed_ids]
-        print(f"🔄 Resume: {len(processed_ids)} already done. {len(metadata)} remaining.")
+        # Slim down metadata to ONLY what the dataset needs (saves RAM in workers)
+        metadata = [{"file": m.get('file') or m.get('image')} for m in metadata 
+                    if (m.get('file') or m.get('image')) not in processed_ids]
+        
+        # Free memory immediately
+        del processed_ids
+        import gc
+        gc.collect()
+        
+        print(f"🔄 Resume: {initial_count - len(metadata)} already done. {len(metadata)} remaining.")
     else:
         print("⏭️ Build-only mode: Skipping extraction stage.")
         metadata = []
@@ -112,7 +120,7 @@ def fast_build_index():
             shuffle=False, 
             num_workers=args.workers, 
             pin_memory=True,
-            prefetch_factor=3,
+            prefetch_factor=2,  # Reduced from 3 to save memory
             persistent_workers=True
         )
 
@@ -142,6 +150,12 @@ def fast_build_index():
                     np.savez_compressed(chunks_dir / f"chunk_{next_chunk_id}.npz", embeddings=save_emb, ids=save_ids)
                     next_chunk_id += 1
                     cur_embs, cur_ids = [], []
+                    
+                    # Periodic memory cleanup
+                    if next_chunk_id % 5 == 0:
+                        import gc
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
             # Save last chunk
             if cur_ids:
@@ -177,6 +191,11 @@ def fast_build_index():
             indices = list(range(start_idx, start_idx + len(ids)))
             store.add(emb, indices)
             full_id_list.extend(ids.tolist())
+            
+            # Help GC clean up large chunk data
+            del data, emb, ids, indices
+            import gc
+            gc.collect()
 
     store.save(index_output_dir / "faiss_index.bin")
     with open(index_output_dir / "id_map.json", "w") as f:

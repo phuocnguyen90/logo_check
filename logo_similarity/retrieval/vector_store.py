@@ -36,7 +36,9 @@ class VectorStore:
     def add(self, embeddings: np.ndarray, ids: List[int]):
         """Add embeddings with explicitly provided integer IDs."""
         try:
-            embeddings = embeddings.astype('float32')
+            # Ensure float32 and contiguous for FAISS efficiency
+            embeddings = np.ascontiguousarray(embeddings, dtype='float32')
+            
             if self.index_type == "cosine":
                 faiss.normalize_L2(embeddings)
             

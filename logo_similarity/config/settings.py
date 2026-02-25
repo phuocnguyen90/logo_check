@@ -5,13 +5,13 @@ IMG_SIZE = 224
 IMG_RESIZE = 256
 TEXT_DETECTION_METHOD = "tesseract"  # Options: tesseract, craft, east
 INPAINT_METHOD = "telea"            # Options: telea, ns
-LRU_CACHE_SIZE = 1000
+LRU_CACHE_SIZE = 100
 
 # Embedding Settings
 MODEL_NAME = "efficientnet-b0"
 EMBEDDING_DIM = 1280
-REDUCED_DIM = 512
-USE_PCA = False  # Set to False to use raw embeddings (1280 dim)
+REDUCED_DIM = 256
+USE_PCA = True  # Enable PCA for limited resource VPS
 
 # Search Settings
 TOP_K_GLOBAL = 1000

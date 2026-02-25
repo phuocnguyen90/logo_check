@@ -67,6 +67,13 @@ class PreprocessingPipeline:
             if flat_path.suffix.lower() == '.jpg':
                 alt_suffix = '.JPG' if flat_path.suffix == '.jpg' else '.jpg'
                 search_paths.append(flat_path.with_suffix(alt_suffix))
+        else:
+            # Fallback 3: Try adding 'images/' subfolder (standard Kaggle structure)
+            img_sub_path = path.parent / "images" / path.name
+            search_paths.append(img_sub_path)
+            if img_sub_path.suffix.lower() == '.jpg':
+                alt_suffix = '.JPG' if img_sub_path.suffix == '.jpg' else '.jpg'
+                search_paths.append(img_sub_path.with_suffix(alt_suffix))
 
         for p in search_paths:
             if p.exists():

@@ -133,7 +133,7 @@ def load_embedder(checkpoint_name: str):
     return embedder, device
 
 
-@st.cache_resource
+@st.cache_resource(max_entries=1)
 def load_index(checkpoint_name: str):
     """Load model-specific FAISS index."""
     d = get_index_dir(checkpoint_name)
@@ -165,7 +165,13 @@ def load_metadata():
     with open(meta_path, "r") as f:
         items = json.load(f)
 
-    return {(m.get('image') or m.get('file')).lower(): m for m in items if m.get('image') or m.get('file')}
+    return {
+        (m.get('image') or m.get('file')).lower(): {
+            "text": m.get("text", ""),
+            "file": m.get("image") or m.get("file")
+        } 
+        for m in items if m.get('image') or m.get('file')
+    }
 
 
 @st.cache_resource
@@ -218,8 +224,8 @@ else:
     st.sidebar.caption("Build one before running retrieval.")
 
     use_toy = st.sidebar.checkbox("Toy dataset (faster)", value=True)
-    build_bs = st.sidebar.select_slider("Build Batch Size (GPU)", options=[64, 128, 256, 512, 1024, 2048], value=512)
-    build_workers = st.sidebar.slider("Build Workers (CPU)", 1, 32, 16)
+    build_bs = st.sidebar.select_slider("Build Batch Size (GPU)", options=[64, 128, 256, 512, 1024, 2048], value=128)
+    build_workers = st.sidebar.slider("Build Workers (CPU)", 1, 32, 4)
 
     if st.sidebar.button("🔨 Build Index", type="primary"):
         # Use subprocess for indexing to enable multi-processing and resumability
@@ -341,6 +347,11 @@ if mode == "📊 Batch Evaluate":
     st.info(f"**{len(pairs)}** validation pairs available.")
 
     if st.button("▶️ Run Batch Evaluation", type="primary"):
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
         progress = st.progress(0, text="Starting…")
         results = []
 

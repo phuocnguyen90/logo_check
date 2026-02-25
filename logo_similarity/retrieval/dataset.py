@@ -4,7 +4,7 @@ import cv2
 from torch.utils.data import Dataset
 # from torchvision import transforms # Removed to avoid NMS operator error
 from PIL import Image
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from ..utils.logging import logger
 from ..config import paths
 from ..preprocessing.pipeline import PreprocessingPipeline
@@ -40,17 +40,26 @@ class TrademarkInferenceDataset(Dataset):
         item = self.metadata[idx]
         img_id = item['file']
         
-        # Construct path
+        # Construct path candidates
         img_path = paths.RAW_DATASET_DIR / "images" / img_id
         
-        # Handle case-insensitive extensions
+        # Robust check
         if not img_path.exists():
-             stem = img_path.stem
-             ext = img_path.suffix
-             alt_ext = ext.swapcase()
-             alt_path = img_path.with_suffix(alt_ext)
-             if alt_path.exists():
-                 img_path = alt_path
+             # Try root
+             alt_root_path = paths.RAW_DATASET_DIR / img_id
+             if alt_root_path.exists():
+                 img_path = alt_root_path
+             else:
+                 # Try swapping case of extension on the primary path
+                 ext = img_path.suffix
+                 alt_path = img_path.with_suffix(ext.swapcase())
+                 if alt_path.exists():
+                     img_path = alt_path
+                 else:
+                     # Try swapping case of extension on the alternate path
+                     alt_path = alt_root_path.with_suffix(ext.swapcase())
+                     if alt_path.exists():
+                         img_path = alt_path
         
         try:
             # 1. Fast Load with OpenCV
