@@ -136,3 +136,7 @@ logs/
 indexes/embeddings/faiss_index.bin
 models/pca_model.joblib
 models/checkpoints/.latest.pth.cdnyXi
+indexes/embeddings/semantic_v1_semantic_epoch_10/faiss_index.bin
+.gitignore
+indexes/embeddings/semantic_v1_semantic_epoch_30/faiss_index.bin
+indexes/embeddings/semantic_v1_semantic_latest/faiss_index.bin

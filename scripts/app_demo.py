@@ -15,6 +15,7 @@ import os
 import sys
 import subprocess
 import time
+from typing import Optional, List, Dict, Any
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -62,6 +63,40 @@ def has_index(checkpoint_name: str) -> bool:
     """Check if a FAISS index exists for the given model."""
     d = get_index_dir(checkpoint_name)
     return (d / "faiss_index.bin").exists() and (d / "id_map.json").exists()
+
+
+def resolve_image_path(filename: str) -> Optional[Path]:
+    """Robustly resolve image path (case-insensitive, subfolder check)."""
+    if not filename:
+        return None
+    
+    path = Path(filename)
+    # If it's already an absolute path that exists, return it
+    if path.is_absolute() and path.exists():
+        return path
+
+    # Search candidates
+    search_dirs = [paths.RAW_DATASET_DIR / "images", paths.RAW_DATASET_DIR]
+    
+    # If the filename itself looks like a relative path with 'images/'
+    if "images" in path.parts:
+        pure_name = path.name
+    else:
+        pure_name = str(path)
+
+    for d in search_dirs:
+        p = d / pure_name
+        if p.exists():
+            return p
+        
+        # Try swapping case of extension
+        if p.suffix.lower() == '.jpg':
+            alt_suffix = '.JPG' if p.suffix == '.jpg' else '.jpg'
+            p_alt = p.with_suffix(alt_suffix)
+            if p_alt.exists():
+                return p_alt
+                
+    return None
 
 
 # =================================================================
@@ -130,7 +165,7 @@ def load_metadata():
     with open(meta_path, "r") as f:
         items = json.load(f)
 
-    return {(m.get('image') or m.get('file')): m for m in items if m.get('image') or m.get('file')}
+    return {(m.get('image') or m.get('file')).lower(): m for m in items if m.get('image') or m.get('file')}
 
 
 @st.cache_resource
@@ -234,6 +269,12 @@ else:
 # =================================================================
 # Load Resources
 # =================================================================
+st.sidebar.markdown("---")
+st.sidebar.header("🔍 Retrieval Settings")
+
+# Query Preprocessing Settings
+clean_query = st.sidebar.checkbox("Clean query logo (remove text)", value=True, help="Use full preprocessing pipeline to detect and mask text for internet logos.")
+
 embedder, device = load_embedder(selected_model)
 store, full_id_list = load_index(selected_model)
 metadata_map = load_metadata()
@@ -242,7 +283,8 @@ if store is None:
     st.error("Failed to load FAISS index.")
     st.stop()
 
-preprocessing = PreprocessingPipeline(config={'skip_text_removal': True})
+# Initialize preprocessing based on toggle
+preprocessing = PreprocessingPipeline(config={'skip_text_removal': not clean_query})
 reranker = ReRanker(embedder)
 composite_pipeline = CompositeScoringPipeline()
 
@@ -305,12 +347,10 @@ if mode == "📊 Batch Evaluate":
         for i, pair in enumerate(pairs):
             q_name, t_name = pair['image1'], pair['image2']
 
-            # Resolve query path
-            q_path = paths.RAW_DATASET_DIR / "images" / q_name
-            if not q_path.exists():
-                q_path = paths.RAW_DATASET_DIR / q_name
+            # Resolve query path robustly
+            q_path = resolve_image_path(q_name)
 
-            if not q_path.exists():
+            if not q_path:
                 results.append(dict(query=q_name, target=t_name, found=False, rank=-1, score=0, error="missing"))
                 continue
 
@@ -325,7 +365,7 @@ if mode == "📊 Batch Evaluate":
             for j, (d, idx) in enumerate(zip(distances, indices)):
                 if idx == -1:
                     continue
-                if full_id_list[idx] == t_name:
+                if full_id_list[idx].lower() == t_name.lower():
                     found, rank, score = True, j + 1, float(d)
                     break
 
@@ -365,7 +405,7 @@ if mode == "📊 Batch Evaluate":
             import pandas as pd
             df = pd.DataFrame(results)
             df['rank'] = df['rank'].apply(lambda x: x if x > 0 else 'N/A')
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
     st.stop()
 
@@ -386,24 +426,20 @@ if mode == "Toy Validation Pair":
         query_img_name = pair['image1']
         target_img_name = pair['image2']
 
-        qp = paths.RAW_DATASET_DIR / "images" / query_img_name
-        if not qp.exists():
-            qp = paths.RAW_DATASET_DIR / query_img_name
-        if qp.exists():
+        qp = resolve_image_path(query_img_name)
+        if qp:
             query_img_path = str(qp)
         else:
-            st.error(f"Image not found: {qp}")
+            st.error(f"Image not found: {query_img_name}")
 
 elif mode == "Raw Image ID":
     query_img_name = st.sidebar.text_input("Enter Image Filename (e.g., uuid.jpg)")
     if query_img_name:
-        qp = paths.RAW_DATASET_DIR / "images" / query_img_name
-        if not qp.exists():
-            qp = paths.RAW_DATASET_DIR / query_img_name
-        if qp.exists():
+        qp = resolve_image_path(query_img_name)
+        if qp:
             query_img_path = str(qp)
         else:
-            st.error("File not found on disk.")
+            st.error(f"File '{query_img_name}' not found on disk.")
 
 elif mode == "Upload Image":
     uploaded = st.sidebar.file_uploader("Upload Query Image", type=["jpg", "png", "jpeg"])
@@ -421,7 +457,7 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.subheader("Query Image")
     if query_img_path:
-        st.image(query_img_path, use_container_width=True)
+        st.image(query_img_path, width='stretch')
         if target_img_name:
             st.caption(f"Target: {target_img_name}")
     else:
@@ -444,23 +480,21 @@ with col2:
                 if idx == -1:
                     continue
                 img_name = full_id_list[idx]
-                cand_path = paths.RAW_DATASET_DIR / "images" / img_name
-                if not cand_path.exists():
-                    cand_path = paths.RAW_DATASET_DIR / img_name
+                cand_path = resolve_image_path(img_name)
 
                 candidates.append({
                     "image": img_name,
-                    "path": str(cand_path),
+                    "path": str(cand_path) if cand_path else None,
                     "global_score": float(dist),
-                    "metadata": metadata_map.get(img_name, {})
+                    "metadata": metadata_map.get(img_name.lower(), {})
                 })
-                if img_name == target_img_name:
+                if img_name.lower() == target_img_name.lower():
                     found_target = True
 
             st.write(f"Stage 1 found {len(candidates)} candidates.")
             if target_img_name:
                 if found_target:
-                    rank = next((j for j, c in enumerate(candidates) if c['image'] == target_img_name), -1)
+                    rank = next((j for j, c in enumerate(candidates) if c['image'].lower() == target_img_name.lower()), -1)
                     st.success(f"Target found at Rank {rank + 1}")
                 else:
                     st.warning(f"Target NOT found in Top {top_k_global}")
@@ -472,7 +506,7 @@ with col2:
 
             # Stage 3 — Composite Scoring
             final = composite_pipeline.score_results(
-                metadata_map.get(query_img_name, {}),
+                metadata_map.get(query_img_name.lower(), {}),
                 preprocessed.original,
                 refined
             )
@@ -484,12 +518,12 @@ with col2:
                 col = rcols[i % 3]
                 with col:
                     if os.path.exists(cand['path']):
-                        st.image(cand['path'], use_container_width=True)
+                        st.image(cand['path'], width='stretch')
                     else:
                         st.warning("Image missing")
 
                     st.markdown(f"**#{i+1}: {cand['image']}**")
-                    if cand['image'] == target_img_name:
+                    if cand['image'].lower() == target_img_name.lower():
                         st.metric("Final Score", f"{cand['final_score']:.3f}", delta="TARGET")
                     else:
                         st.write(f"Score: **{cand['final_score']:.3f}**")

@@ -33,6 +33,8 @@ def fast_build_index():
     parser.add_argument("--workers", type=int, default=8, help="CPU workers (8 is safer for 16GB RAM)")
     parser.add_argument("--force", action="store_true", help="Clear existing index for this checkpoint")
     parser.add_argument("--toy", action="store_true", help="Run on toy dataset")
+    parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision (safer if model is unstable)")
+    parser.add_argument("--build-only", action="store_true", help="Skip extraction, only build FAISS from existing chunks")
     args = parser.parse_args()
 
     # 1. Setup Paths
@@ -63,16 +65,20 @@ def fast_build_index():
 
     # Resumability logic
     processed_ids = set()
-    for chunk_file in chunks_dir.glob("*.npz"):
-        try:
-            with np.load(chunk_file) as data:
-                processed_ids.update(data['ids'].tolist())
-        except:
-            chunk_file.unlink()
-    
-    initial_count = len(metadata)
-    metadata = [m for m in metadata if (m.get('file') or m.get('image')) not in processed_ids]
-    print(f"🔄 Resume: {len(processed_ids)} already done. {len(metadata)} remaining.")
+    if not args.build_only:
+        for chunk_file in chunks_dir.glob("*.npz"):
+            try:
+                with np.load(chunk_file) as data:
+                    processed_ids.update(data['ids'].tolist())
+            except:
+                chunk_file.unlink()
+        
+        initial_count = len(metadata)
+        metadata = [m for m in metadata if (m.get('file') or m.get('image')) not in processed_ids]
+        print(f"🔄 Resume: {len(processed_ids)} already done. {len(metadata)} remaining.")
+    else:
+        print("⏭️ Build-only mode: Skipping extraction stage.")
+        metadata = []
 
     if not metadata:
         print("✅ Everything already processed.")
@@ -118,7 +124,7 @@ def fast_build_index():
         existing_chunks = [int(p.stem.split('_')[1]) for p in chunks_dir.glob("chunk_*.npz")]
         next_chunk_id = max(existing_chunks) + 1 if existing_chunks else 0
 
-        with torch.no_grad(), torch.cuda.amp.autocast():
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=not args.no_amp):
             for batch_imgs, batch_ids, batch_valid in tqdm(loader, desc="Indexing"):
                 valid_mask = batch_valid.bool()
                 if not valid_mask.any(): continue
@@ -145,6 +151,14 @@ def fast_build_index():
 
     # 6. Final FAISS Construction
     print("🏗️ Consolidating chunks into FAISS index...")
+    
+    # Cleanup memory before large-scale FAISS build
+    if 'embedder' in locals(): del embedder
+    if 'loader' in locals(): del loader
+    torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
     chunk_files = sorted(chunks_dir.glob("*.npz"))
     if not chunk_files:
         print("❌ No data to index.")
