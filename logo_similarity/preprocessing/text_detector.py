@@ -1,5 +1,4 @@
 import cv2
-import pytesseract
 import numpy as np
 from typing import List, Tuple, Dict
 from ..utils.logging import logger
@@ -18,6 +17,13 @@ class TextDetector:
         Returns a list of (x, y, w, h) bounding boxes.
         """
         try:
+            # Lazy loading to avoid torch/tesseract dependency in production unless needed
+            try:
+                import pytesseract
+            except ImportError:
+                logger.warning("Pytesseract not installed. Use 'pip install pytesseract' for Stage 5 text removal. Skipping detection.")
+                return []
+            
             # Tesseract expects RGB or Grayscale
             # Use data output to get bounding boxes directly
             # Config: --psm 11 (Sparse text. Find as much text as possible in no particular order.)

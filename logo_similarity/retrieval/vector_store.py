@@ -18,8 +18,6 @@ class VectorStore:
     def _set_index(self, index_type: str):
         """Create the underlying FAISS index."""
         if index_type == "hnsw":
-            # M=32 is a good balance for search speed/accuracy
-            # Use Inner Product for contrastive embeddings (equivalent to Cosine when normalized)
             sub_index = faiss.IndexHNSWFlat(self.dimension, 32, faiss.METRIC_INNER_PRODUCT)
         elif index_type == "l2":
             sub_index = faiss.IndexFlatL2(self.dimension)
@@ -28,20 +26,14 @@ class VectorStore:
         else:
             logger.warning(f"Unknown index type {index_type}, falling back to FlatL2")
             sub_index = faiss.IndexFlatL2(self.dimension)
-            
-        # Wrap with IndexIDMap2 to store 64-bit integer IDs (or indices)
-        # We'll map our string UUIDs to integer indices internally
         self.index = faiss.IndexIDMap2(sub_index)
 
     def add(self, embeddings: np.ndarray, ids: List[int]):
         """Add embeddings with explicitly provided integer IDs."""
         try:
-            # Ensure float32 and contiguous for FAISS efficiency
             embeddings = np.ascontiguousarray(embeddings, dtype='float32')
-            
             if self.index_type == "cosine":
                 faiss.normalize_L2(embeddings)
-            
             ids_arr = np.array(ids).astype('int64')
             self.index.add_with_ids(embeddings, ids_arr)
             logger.debug(f"Added {len(ids)} vectors to index.")
@@ -51,7 +43,17 @@ class VectorStore:
     def search(self, query: np.ndarray, k: int = 100) -> Tuple[np.ndarray, np.ndarray]:
         """Search for top-k nearest neighbors."""
         try:
-            query = query.astype('float32').reshape(1, -1)
+            if query is None: return np.array([]), np.array([])
+            # Ensure query is float32 and [1, D]
+            query = query.astype('float32')
+            if len(query.shape) == 1:
+                query = query.reshape(1, -1)
+            
+            # Dimension check to prevent cryptic FAISS crashes
+            if query.shape[1] != self.index.d:
+                logger.error(f"Search dimension mismatch! Query: {query.shape[1]}, Index: {self.index.d}")
+                return np.array([]), np.array([])
+
             if self.index_type == "cosine":
                 faiss.normalize_L2(query)
                 
@@ -71,22 +73,29 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to save index: {e}")
 
-    def load(self, path: str):
-        """Load FAISS index from disk."""
+    def load(self, path: str, use_mmap: bool = False):
+        """Load FAISS index from disk. Supports MMAP for production."""
         try:
-            self.index = faiss.read_index(str(path))
+            if use_mmap:
+                logger.info(f"Using MMAP for FAISS index: {path}")
+                self.index = faiss.read_index(str(path), faiss.IO_FLAG_MMAP)
+            else:
+                self.index = faiss.read_index(str(path))
+            
             self.dimension = self.index.d
             
-            # Try to move to GPU if available and requested
+            # Try to move to GPU if available (for local dev)
             try:
-                if hasattr(faiss, 'get_num_gpus') and faiss.get_num_gpus() > 0:
+                # MMAP indices cannot be directly moved to standard GPU indices 
+                # without copying, which defeats the purpose of MMAP.
+                if not use_mmap and hasattr(faiss, 'get_num_gpus') and faiss.get_num_gpus() > 0:
                     res = faiss.StandardGpuResources()
                     self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
                     logger.info(f"Moved FAISS index to GPU 0")
-            except Exception as e:
-                logger.warning(f"Could not move FAISS index to GPU: {e}")
+            except Exception:
+                pass
                 
-            logger.info(f"Loaded FAISS index from {path} (size={self.index.ntotal})")
+            logger.info(f"Loaded FAISS index from {path} (size={self.index.ntotal}, dim={self.dimension})")
         except Exception as e:
             logger.error(f"Failed to load index from {path}: {e}")
             raise

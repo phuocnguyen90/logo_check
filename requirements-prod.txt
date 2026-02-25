@@ -1,0 +1,18 @@
+# Production Inference (ONNX + PCA)
+onnxruntime
+faiss-cpu
+scikit-learn
+joblib
+numpy
+opencv-python-headless
+pillow
+
+# API Setup
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+boto3
+python-dotenv
+loguru

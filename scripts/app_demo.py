@@ -99,6 +99,24 @@ def resolve_image_path(filename: str) -> Optional[Path]:
     return None
 
 
+def normalize_name(name) -> str:
+    """
+    Canonical name adapter for filename comparison across training / serving / evaluation.
+
+    The same logo is referred to differently in:
+      - id_map   ->  'images/uuid.JPG'  or  'uuid.jpg'
+      - validation pairs  ->  'uuid.jpg'
+      - MinIO keys  ->  'images/uuid.jpg'
+      - local filesystem  ->  absolute path with .JPG extension
+
+    This function extracts just the basename and lowercases it so all comparisons
+    are consistent. Always safe to call with None.
+    """
+    if not name:
+        return ""
+    return Path(name).name.lower()
+
+
 # =================================================================
 # Cached Resource Loaders
 # =================================================================
@@ -143,8 +161,8 @@ def load_index(checkpoint_name: str):
     if not idx_path.exists() or not map_path.exists():
         return None, []
 
-    dim = 1280 if not settings.USE_PCA else settings.REDUCED_DIM
-    store = VectorStore(dimension=dim, index_type="hnsw")
+    # VectorStore.load auto-detects dim from the .bin file
+    store = VectorStore(dimension=1280, index_type="hnsw")
     store.load(idx_path)
 
     with open(map_path, "r") as f:
@@ -300,6 +318,7 @@ if settings.USE_PCA:
     pca_path = paths.MODELS_DIR / "pca_model.joblib"
     if pca_path.exists():
         reducer = PCAReducer.load(pca_path)
+        st.sidebar.caption(f"PCA: {reducer.n_components}d loaded")
 
 
 # =================================================================
@@ -325,13 +344,22 @@ def embed_query(img_path: str):
         return None, None
 
     q_emb = embedder.get_embedding(preprocessed.normalized, device=device)
-    if reducer:
-        q_search = reducer.transform(q_emb.reshape(1, -1))
+    q_vec = q_emb.reshape(1, -1).astype("float32")
+
+    # Auto-select raw vs PCA-reduced based on what the loaded index actually uses
+    if store is not None:
+        if store.dimension == q_vec.shape[1]:
+            q_search = q_vec  # 1280d index (original GPU setup)
+        elif reducer is not None and store.dimension == reducer.n_components:
+            q_search = reducer.transform(q_vec).astype("float32")  # PCA-reduced
+        else:
+            pca_dim = reducer.n_components if reducer else 'None'
+            st.error(f"Dimension mismatch — Index: {store.dimension}d | Raw: {q_vec.shape[1]}d | PCA: {pca_dim}d. Rebuild index.")
+            return preprocessed, None
     else:
-        q_search = q_emb.reshape(1, -1)
+        q_search = q_vec
 
     return preprocessed, q_search
-
 
 # =================================================================
 # BATCH EVALUATE MODE
@@ -376,7 +404,7 @@ if mode == "📊 Batch Evaluate":
             for j, (d, idx) in enumerate(zip(distances, indices)):
                 if idx == -1:
                     continue
-                if full_id_list[idx].lower() == t_name.lower():
+                if normalize_name(full_id_list[idx]) == normalize_name(t_name):
                     found, rank, score = True, j + 1, float(d)
                     break
 
@@ -497,15 +525,15 @@ with col2:
                     "image": img_name,
                     "path": str(cand_path) if cand_path else None,
                     "global_score": float(dist),
-                    "metadata": metadata_map.get(img_name.lower(), {})
+                    "metadata": metadata_map.get(normalize_name(img_name), {})
                 })
-                if img_name.lower() == target_img_name.lower():
+                if normalize_name(img_name) == normalize_name(target_img_name):
                     found_target = True
 
             st.write(f"Stage 1 found {len(candidates)} candidates.")
             if target_img_name:
                 if found_target:
-                    rank = next((j for j, c in enumerate(candidates) if c['image'].lower() == target_img_name.lower()), -1)
+                    rank = next((j for j, c in enumerate(candidates) if normalize_name(c['image']) == normalize_name(target_img_name)), -1)
                     st.success(f"Target found at Rank {rank + 1}")
                 else:
                     st.warning(f"Target NOT found in Top {top_k_global}")
@@ -517,7 +545,7 @@ with col2:
 
             # Stage 3 — Composite Scoring
             final = composite_pipeline.score_results(
-                metadata_map.get(query_img_name.lower(), {}),
+                metadata_map.get(normalize_name(query_img_name), {}),
                 preprocessed.original,
                 refined
             )
@@ -534,7 +562,7 @@ with col2:
                         st.warning("Image missing")
 
                     st.markdown(f"**#{i+1}: {cand['image']}**")
-                    if cand['image'].lower() == target_img_name.lower():
+                    if normalize_name(cand['image']) == normalize_name(target_img_name):
                         st.metric("Final Score", f"{cand['final_score']:.3f}", delta="TARGET")
                     else:
                         st.write(f"Score: **{cand['final_score']:.3f}**")

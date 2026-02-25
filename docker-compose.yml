@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the code for live-updates during local test
+      - ./logo_similarity:/app/logo_similarity
+      # Mount the models and indexes for local testing without rebuilding image
+      - ./models:/app/models
+      - ./indexes:/app/indexes
+      - ./data:/app/data
+      # Mount images if needed for local fallback (otherwise uses MinIO)
+      - ${RAW_DATASET_DIR}:/app/data/raw
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      # Override MinIO host if running in Docker network (optional)
+      # - MINIO_HOST=http://host.docker.internal:9000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
