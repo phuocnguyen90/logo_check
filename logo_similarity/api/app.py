@@ -135,6 +135,7 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50):
 
 @app.get("/health")
 def health():
+    logger.debug("Health check pinged")
     return {
         "status": "ready",
         "model": ctx.inference is not None,
@@ -142,4 +143,5 @@ def health():
     }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

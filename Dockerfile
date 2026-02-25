@@ -29,5 +29,5 @@ RUN mkdir -p data/ models/ indexes/
 # Expose FastAPI port
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uvicorn", "logo_similarity.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run with uvicorn (using shell form to expand $PORT)
+CMD uvicorn logo_similarity.api.app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
