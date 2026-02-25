@@ -27,7 +27,7 @@ class APIContext:
 
     def initialize(self):
         # 1. Locate VPS Bundle
-        ckpt_stem = "semantic_v1_semantic_epoch_30"
+        ckpt_stem = "best_model"
         onnx_dir = paths.MODELS_DIR / "onnx" / ckpt_stem
         
         model_path = onnx_dir / "model.onnx"

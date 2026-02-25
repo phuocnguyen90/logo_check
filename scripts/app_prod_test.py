@@ -84,7 +84,7 @@ if uploaded_file is not None:
     with col1:
         img = Image.open(uploaded_file)
         # st.image(img, caption="Query Logo", width='stretch') # streamlit 1.40+ style
-        st.image(img, caption="Query Logo", use_container_width=True)
+        st.image(img, caption="Query Logo", width='stretch')
         
     with col2:
         if st.button("🔍 Search Production Index"):
@@ -123,7 +123,7 @@ if uploaded_file is not None:
                                                 st.image(
                                                     img_bytes, 
                                                     caption=f"Score: {res['score']:.4f}\n{filename}",
-                                                    use_container_width=True
+                                                    width='stretch'
                                                 )
                                             else:
                                                 st.warning(f"Image {filename} missing")

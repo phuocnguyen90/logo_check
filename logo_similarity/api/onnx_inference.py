@@ -1,58 +1,81 @@
 import onnxruntime as ort
 import numpy as np
-import torch
-from typing import List, Optional
+import joblib
+from typing import List, Optional, Union
+import cv2
 from ..utils.logging import logger
 from ..config import settings
+from pathlib import Path
 
 class ONNXInference:
     """
-    High-performance inference using ONNX Runtime with CUDA provider.
-    Optimized for FP16 as per Revised Plan v2.
+    Portable inference engine for ONNX models.
+    Supports CPU auto-fallback for VPS and optional PCA dimensionality reduction.
     """
     
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, pca_path: Optional[str] = None):
         try:
-            # Configure session for GPU usage
-            providers = [
-                ('CUDAExecutionProvider', {
+            # Smart provider selection: try CUDA first, fallback to CPU
+            available_providers = ort.get_available_providers()
+            
+            preferred_providers = []
+            if 'CUDAExecutionProvider' in available_providers:
+                preferred_providers.append(('CUDAExecutionProvider', {
                     'device_id': 0,
                     'arena_extend_strategy': 'kNextPowerOfTwo',
-                    'gpu_mem_limit': 4 * 1024 * 1024 * 1024, # 4GB limit for inference
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                    'do_copy_in_default_stream': True,
-                }),
-                'CPUExecutionProvider',
-            ]
+                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024, # 2GB limit for VPS safety
+                }))
             
-            self.session = ort.InferenceSession(model_path, providers=providers)
+            preferred_providers.append('CPUExecutionProvider')
+            
+            self.session = ort.InferenceSession(model_path, providers=preferred_providers)
             self.input_name = self.session.get_inputs()[0].name
-            logger.info(f"Initialized ONNXInference from {model_path}")
+            
+            # Load PCA if provided
+            self.pca = None
+            if pca_path and Path(pca_path).exists():
+                self.pca = joblib.load(pca_path)
+                logger.info(f"Loaded PCA from {pca_path}")
+            
+            logger.info(f"Initialized ONNXInference with providers: {self.session.get_providers()}")
         except Exception as e:
             logger.error(f"Failed to load ONNX model: {e}")
             raise
 
-    def preprocess_tensor(self, normalized_img: np.ndarray) -> np.ndarray:
-        """Standard ImageNet normalization for inference."""
-        # CHW conversion
-        img = normalized_img.transpose(2, 0, 1).astype(np.float32) / 255.0
-        
-        mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
-        std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
-        
-        img = (img - mean) / std
-        return img.astype(np.float32)
-
-    def run(self, batch: np.ndarray) -> np.ndarray:
+    def preprocess(self, img_bgr: np.ndarray) -> np.ndarray:
         """
-        Run inference on a batch of preprocessed images.
-        Input shape: [B, 3, 224, 224]
+        Full image preprocessing: BGR -> RGB -> Resize -> Normalize -> Transpose.
+        Matches the training pipeline exactly.
+        """
+        # 1. BGR to RGB
+        img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        
+        # 2. Resize
+        img = cv2.resize(img, (settings.IMG_SIZE, settings.IMG_SIZE))
+        
+        # 3. Scale and Normalize
+        img = img.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img = (img - mean) / std
+        
+        # 4. HWC to CHW and add batch dim
+        return img.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    def run(self, img_bgr: np.ndarray, apply_pca: bool = True) -> np.ndarray:
+        """
+        Run end-to-end inference: Preprocess -> ONNX -> PCA (if loaded).
         """
         try:
-            # ONNX expected float32 normally, or float16 if exported so.
-            # ORT handles the precision internally if the model is FP16.
+            batch = self.preprocess(img_bgr)
             outputs = self.session.run(None, {self.input_name: batch})
-            return outputs[0]
+            embedding = outputs[0] # [1, 1280]
+            
+            # Apply PCA if requested and available
+            if apply_pca and self.pca is not None:
+                embedding = self.pca.transform(embedding).astype('float32')
+            
+            return embedding
         except Exception as e:
-            logger.error(f"ONNX inference failed: {e}")
-            return np.zeros((batch.shape[0], settings.EMBEDDING_DIM))
+            logger.error(f"Inference failed: {e}")
+            return None

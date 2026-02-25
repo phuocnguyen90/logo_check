@@ -55,3 +55,38 @@ Epoch 19 complete. Avg Loss: 7.2163
 1. Continue training to Epoch 50 to allow the learning rate to reach its minimum.
 2. Re-evaluate every 5-10 epochs to monitor semantic retrieval improvement.
 3. Run `test_full_pipeline.py` with the "Best Model" for qualitative visual inspection.
+
+---
+
+## Observation: "Clean Query Logo" Toggle Degrades Retrieval (2026-02-25)
+
+**Finding**: Disabling the "Clean query logo (remove text)" checkbox in `app_demo.py` consistently yields better retrieval results than leaving it enabled.
+
+**Root Cause — Train/Index/Query Preprocessing Inconsistency:**
+
+The entire pipeline (train → index → query) was built around **raw, un-cleaned images**:
+
+1. **Training** (`04_train_model_moco.py` → `training/dataset.py` line 33):
+   ```python
+   pipeline_config = {'skip_text_removal': is_training}  # True during training
+   ```
+   Text removal is **explicitly skipped** during training for throughput. MoCo learned its embedding space from raw logos with text intact.
+
+2. **Indexing** (`03_build_index.py` → `retrieval/dataset.py`):
+   `TrademarkInferenceDataset` performs only `ImageNormalizer.normalize()` — no text removal. All indexed FAISS embeddings represent raw logos.
+
+3. **Query with clean=ON**: The query image goes through Tesseract detection + TELEA inpainting before embedding, producing an out-of-distribution input the model never encountered during training.
+
+**Result**: Query embedding lands in an unfamiliar region of the embedding space → cosine distances no longer reflect true similarity → retrieval degrades.
+
+**Additional compounding factors**:
+- Tesseract `--psm 11` with `conf > 0` threshold is very permissive and can falsely mask non-text graphic elements.
+- For wordmark/text-heavy logos, inpainting removes the most discriminative visual feature entirely.
+- The asymmetry is one-sided: index is raw, query is cleaned, so the model's learned distance metric breaks.
+
+**Recommendation**: Keep "Clean query logo" **OFF** for all evaluations. The current raw-on-raw setup is consistent and correct.
+
+If text-invariant retrieval is a future goal (e.g., querying internet logos against registered marks with different surrounding text), the correct fix requires:
+1. Rebuilding the index from text-cleaned images, **and**
+2. Retraining the model with text-cleaned augmentations so it learns text-invariant features.
+Both sides must be consistent.

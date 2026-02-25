@@ -121,9 +121,16 @@ def normalize_name(name) -> str:
 # Cached Resource Loaders
 # =================================================================
 
-@st.cache_resource
+@st.cache_resource(max_entries=1)
 def load_embedder(checkpoint_name: str):
-    """Load EfficientNet embedder with MoCo checkpoint weights."""
+    """
+    Load EfficientNet embedder with MoCo checkpoint weights.
+    max_entries=1 ensures that when the user switches checkpoints the previous
+    model is evicted from the cache (and its GPU/CPU memory released) before
+    the new one is loaded.  Without this, every checkpoint ever selected would
+    remain resident for the lifetime of the Streamlit process.
+    """
+    import gc
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedder = EfficientNetEmbedder().to(device)
     ckpt_path = paths.CHECKPOINTS_DIR / checkpoint_name
@@ -147,6 +154,11 @@ def load_embedder(checkpoint_name: str):
         embedder.eval()
     else:
         st.error(f"Checkpoint not found: {ckpt_path}")
+
+    # Release any temporary tensors created during weight loading
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return embedder, device
 
@@ -281,6 +293,12 @@ else:
         if proc.returncode == 0:
             st.success("✅ Index built! Reloading…")
             st.cache_resource.clear()
+            # Eagerly free GPU and numpy heap memory after evicting all cached
+            # resources so the new index/model start with a clean slate.
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             time.sleep(1)
             st.rerun()
         else:
@@ -307,10 +325,32 @@ if store is None:
     st.error("Failed to load FAISS index.")
     st.stop()
 
-# Initialize preprocessing based on toggle
-preprocessing = PreprocessingPipeline(config={'skip_text_removal': not clean_query})
-reranker = ReRanker(embedder)
-composite_pipeline = CompositeScoringPipeline()
+# ---------------------------------------------------------------------------
+# Cached helpers for objects that are NOT in @st.cache_resource above but
+# still hold significant memory (the PreprocessingPipeline keeps an LRU cache
+# of decoded numpy image arrays).
+#
+# Keying on `clean_query` means the pipeline's internal image cache is
+# invalidated whenever the toggle flips, preventing stale inpainted images
+# from polluting a subsequent "clean=OFF" session (or vice-versa).
+# max_entries=1 ensures old pipelines are GC'd rather than accumulated.
+# ---------------------------------------------------------------------------
+@st.cache_resource(max_entries=1)
+def _make_preprocessing(skip_text_removal: bool) -> PreprocessingPipeline:
+    return PreprocessingPipeline(config={'skip_text_removal': skip_text_removal})
+
+@st.cache_resource(max_entries=1)
+def _make_reranker(_embedder):
+    # Underscore prefix on arg tells Streamlit not to hash the embedder object
+    return ReRanker(_embedder)
+
+@st.cache_resource(max_entries=1)
+def _make_composite():
+    return CompositeScoringPipeline()
+
+preprocessing = _make_preprocessing(not clean_query)
+reranker = _make_reranker(embedder)
+composite_pipeline = _make_composite()
 
 reducer = None
 if settings.USE_PCA:
