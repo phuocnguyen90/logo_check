@@ -1,34 +1,33 @@
-FROM nvidia/cuda:12.1.0-base-ubuntu22.04
+# Slim Python image for minimum cold start
+FROM python:3.10-slim
 
-# Set up work directory
+# Prevent python from writing pyc files and buffering stdout
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    tesseract-ocr \
-    libgl1-mesa-glx \
+# Install minimal system dependencies for OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Install production requirements
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
-# Copy project files
+# Copy only the necessary code
 COPY logo_similarity/ logo_similarity/
-COPY scripts/ scripts/
-COPY README.md .
 
-# Create needed directories
-RUN mkdir -p data/ models/ indexes/ logs/
+# Note: In production/serverless, models and indexes should be 
+# either baked into the image or volume-mounted.
+# Here we create the structure.
+RUN mkdir -p data/ models/ indexes/
 
-# Expose port
+# Expose FastAPI port
 EXPOSE 8000
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# Run API
-CMD ["python3", "logo_similarity/api/app.py"]
+# Run with uvicorn
+CMD ["uvicorn", "logo_similarity.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
