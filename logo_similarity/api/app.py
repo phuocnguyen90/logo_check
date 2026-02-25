@@ -23,9 +23,11 @@ class APIContext:
         self.vector_store = None
         self.id_map = []
         self.db_path = Path("data/metadata.db")
-        self.bucket = os.getenv("MINIO_BUCKET", "l3d")
+        # Priority: RAILWAY_BUCKET_NAME -> MINIO_BUCKET -> 'l3d'
+        self.bucket = os.getenv("RAILWAY_BUCKET_NAME") or os.getenv("MINIO_BUCKET", "l3d")
 
     def initialize(self):
+        """Warm up the API: Download models if missing and load them."""
         # 1. Locate VPS Bundle
         ckpt_stem = "best_model"
         onnx_dir = paths.MODELS_DIR / "onnx" / ckpt_stem
@@ -35,32 +37,58 @@ class APIContext:
         index_path = onnx_dir / "vps_index.bin"
         id_map_path = onnx_dir / "vps_id_map.json"
 
-        # 2. Load ONNX Inference Engine
-        if model_path.exists():
-            self.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
-            logger.info(f"✅ Loaded ONNX Model: {model_path}")
-        else:
-            logger.error(f"❌ Model not found: {model_path}")
+        # Required files to download if missing
+        required_files = {
+            f"models/{ckpt_stem}/model.onnx": model_path,
+            f"models/{ckpt_stem}/model.onnx.data": onnx_dir / "model.onnx.data",
+            f"models/{ckpt_stem}/pca_model.joblib": pca_path,
+            f"models/{ckpt_stem}/vps_index.bin": index_path,
+            f"models/{ckpt_stem}/vps_id_map.json": id_map_path,
+        }
 
-        # 3. Load FAISS (Memory Mapped for Serverless speed)
-        if index_path.exists():
-            # Initial dim doesn't strictly matter if we use .load() as it overwrites index
-            self.vector_store = VectorStore(256) 
-            self.vector_store.load(str(index_path), use_mmap=True)
-            logger.info(f"✅ Loaded MMAP Index: {index_path} (dim={self.vector_store.dimension})")
-            
-            if id_map_path.exists():
-                with open(id_map_path, "r") as f:
-                    self.id_map = json.load(f)
+        # 2. Check and Download from S3/MinIO
+        for s3_key, local_path in required_files.items():
+            if not local_path.exists():
+                logger.info(f"🚚 Downloading {s3_key} from {self.bucket}...")
+                success = s3_service.download_file(self.bucket, s3_key, local_path)
+                if not success:
+                    logger.error(f"❌ Failed to download {s3_key}")
+
+        # 3. Load ONNX Inference Engine
+        if model_path.exists():
+            try:
+                self.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
+                logger.info(f"✅ Loaded ONNX Model: {model_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to load ONNX: {e}")
         else:
-            logger.error(f"❌ Index not found: {index_path}")
+            logger.error(f"❌ Model file missing after initialization: {model_path}")
+
+        # 4. Load FAISS (Memory Mapped for Serverless speed)
+        if index_path.exists():
+            try:
+                # Initial dim doesn't strictly matter if we use .load() as it overwrites index
+                self.vector_store = VectorStore(256) 
+                self.vector_store.load(str(index_path), use_mmap=True)
+                logger.info(f"✅ Loaded MMAP Index: {index_path} (dim={self.vector_store.dimension})")
+                
+                if id_map_path.exists():
+                    with open(id_map_path, "r") as f:
+                        self.id_map = json.load(f)
+            except Exception as e:
+                logger.error(f"❌ Failed to load Index: {e}")
+        else:
+            logger.error(f"❌ Index file missing after initialization: {index_path}")
 
 # Global context
 ctx = APIContext()
 
+import asyncio
+
 @app.on_event("startup")
 async def startup_event():
-    ctx.initialize()
+    # Run initialization in background so health checks can pass during download
+    asyncio.create_task(asyncio.to_thread(ctx.initialize))
 
 @app.post("/v1/search")
 async def search_image(file: UploadFile = File(...), top_k: int = 50):
