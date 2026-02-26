@@ -52,6 +52,7 @@ class ModelBundle:
         self.inference = None
         self.vector_store = None
         self.id_map_db = None
+        self.id_map_list = None # Fallback for JSON mapping
         self.index_path = None
         self.id_map_path = None
 
@@ -79,6 +80,7 @@ class APIContext:
         pca_path = onnx_dir / "pca_model.joblib"
         bundle.index_path = onnx_dir / "vps_index.bin"
         bundle.id_map_path = onnx_dir / "vps_id_map.db"
+        id_map_json_path = onnx_dir / "vps_id_map.json"
 
         # 1. Download if missing
         required_files = {
@@ -87,6 +89,7 @@ class APIContext:
             f"models/{model_id}/pca_model.joblib": pca_path,
             f"models/{model_id}/vps_index.bin": bundle.index_path,
             f"models/{model_id}/vps_id_map.db": bundle.id_map_path,
+            f"models/{model_id}/vps_id_map.json": id_map_json_path,
         }
 
         for s3_key, local_path in required_files.items():
@@ -98,12 +101,22 @@ class APIContext:
         if model_path.exists():
             bundle.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
         
-        # 3. Load Index
+        # 3. Load Index & ID Map
         if bundle.index_path.exists():
             bundle.vector_store = VectorStore(256)
             bundle.vector_store.load(str(bundle.index_path), use_mmap=True)
+            
+            # Prefer SQLite for efficiency
             if bundle.id_map_path.exists():
                 bundle.id_map_db = str(bundle.id_map_path)
+            # Fallback to JSON if DB is missing
+            elif id_map_json_path.exists():
+                logger.info(f"📂 Loading fallback JSON ID map for {model_id}...")
+                try:
+                    with open(id_map_json_path, 'r') as f:
+                        bundle.id_map_list = json.load(f)
+                except Exception as e:
+                    logger.error(f"Failed to load JSON ID map: {e}")
             
             self.bundles[model_id] = bundle
             logger.info(f"✅ Bundle '{model_id}' ready.")
@@ -112,23 +125,35 @@ class APIContext:
         return self.bundles.get(model_id)
 
     def get_filenames(self, bundle: ModelBundle, indices: List[int]) -> List[str]:
-        """Bulk lookup for search results."""
-        if not bundle.id_map_db:
+        """Bulk lookup for search results (SQLite first, JSON fallback)."""
+        if not bundle.id_map_db and not bundle.id_map_list:
             return [str(idx) for idx in indices]
         
-        results = {}
-        try:
-            conn = sqlite3.connect(bundle.id_map_db)
-            cursor = conn.cursor()
-            # Batch query for efficiency
-            placeholders = ",".join(["?"] * len(indices))
-            cursor.execute(f"SELECT id, filename FROM id_map WHERE id IN ({placeholders})", indices)
-            results = {row[0]: row[1] for row in cursor.fetchall()}
-            conn.close()
-        except Exception as e:
-            logger.error(f"Batch ID lookup failed: {e}")
+        # Scenario A: SQLite lookup
+        if bundle.id_map_db:
+            results = {}
+            try:
+                conn = sqlite3.connect(bundle.id_map_db)
+                cursor = conn.cursor()
+                placeholders = ",".join(["?"] * len(indices))
+                cursor.execute(f"SELECT id, filename FROM id_map WHERE id IN ({placeholders})", indices)
+                results = {row[0]: row[1] for row in cursor.fetchall()}
+                conn.close()
+                return [results.get(idx, str(idx)) for idx in indices]
+            except Exception as e:
+                logger.error(f"Batch ID lookup failed: {e}")
+
+        # Scenario B: JSON List fallback
+        if bundle.id_map_list:
+            res = []
+            for idx in indices:
+                try:
+                    res.append(bundle.id_map_list[idx])
+                except (IndexError, TypeError):
+                    res.append(str(idx))
+            return res
             
-        return [results.get(idx, str(idx)) for idx in indices]
+        return [str(idx) for idx in indices]
 
     def add_to_bundle_index(self, bundle: ModelBundle, embedding: np.ndarray, filename: str):
         """Thread-safe incremental update and write-back to cloud for a specific bundle."""
