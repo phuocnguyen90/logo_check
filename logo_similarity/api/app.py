@@ -1,4 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Security
+from fastapi.security.api_key import APIKeyHeader, APIKey
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 import uvicorn
 import cv2
@@ -17,112 +19,143 @@ from ..retrieval.vector_store import VectorStore
 
 app = FastAPI(title="Logo Similarity Production API", version="1.0.0")
 
+# 1. CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, replace with your specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 2. API Key Security
+API_KEY = os.getenv("API_KEY", "dev_key_change_me")
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+async def get_api_key(header_key: str = Security(api_key_header)):
+    if header_key == API_KEY:
+        return header_key
+    raise HTTPException(
+        status_code=403, detail="Could not validate credentials"
+    )
+
 import asyncio
 import uuid
 import threading
 
-class APIContext:
-    def __init__(self):
+class ModelBundle:
+    def __init__(self, name: str):
+        self.name = name
         self.inference = None
         self.vector_store = None
         self.id_map_db = None
-        self.db_path = Path("data/metadata.db")
-        self.lock = threading.Lock() # Protect index/DB during incremental updates
-        # Priority: RAILWAY_BUCKET_NAME -> MINIO_BUCKET -> 'l3d'
+        self.index_path = None
+        self.id_map_path = None
+
+class APIContext:
+    def __init__(self):
+        self.bundles: Dict[str, ModelBundle] = {}
+        self.lock = threading.Lock()
         self.bucket = os.getenv("RAILWAY_BUCKET_NAME") or os.getenv("MINIO_BUCKET", "l3d")
+        # List of models to load on startup, e.g. "best_model,semantic_v1"
+        self.enabled_models = os.getenv("SERVE_MODELS", "best_model").split(",")
 
     def initialize(self):
-        """Warm up the API: Download models if missing and load them."""
-        # 1. Locate VPS Bundle
-        ckpt_stem = "best_model"
-        onnx_dir = paths.MODELS_DIR / "onnx" / ckpt_stem
-        
-        self.model_path = onnx_dir / "model.onnx"
-        self.pca_path = onnx_dir / "pca_model.joblib"
-        self.index_path = onnx_dir / "vps_index.bin"
-        self.id_map_path = onnx_dir / "vps_id_map.db"
+        """Warm up all enabled models."""
+        for model_id in self.enabled_models:
+            model_id = model_id.strip()
+            self.load_bundle(model_id)
 
-        # Required files to download if missing
+    def load_bundle(self, model_id: str):
+        """Download and load a specific model bundle."""
+        logger.info(f"🏗 Preparing bundle: {model_id}")
+        onnx_dir = paths.MODELS_DIR / "onnx" / model_id
+        
+        bundle = ModelBundle(model_id)
+        model_path = onnx_dir / "model.onnx"
+        pca_path = onnx_dir / "pca_model.joblib"
+        bundle.index_path = onnx_dir / "vps_index.bin"
+        bundle.id_map_path = onnx_dir / "vps_id_map.db"
+
+        # 1. Download if missing
         required_files = {
-            f"models/{ckpt_stem}/model.onnx": self.model_path,
-            f"models/{ckpt_stem}/model.onnx.data": onnx_dir / "model.onnx.data",
-            f"models/{ckpt_stem}/pca_model.joblib": self.pca_path,
-            f"models/{ckpt_stem}/vps_index.bin": self.index_path,
-            f"models/{ckpt_stem}/vps_id_map.db": self.id_map_path,
+            f"models/{model_id}/model.onnx": model_path,
+            f"models/{model_id}/model.onnx.data": onnx_dir / "model.onnx.data",
+            f"models/{model_id}/pca_model.joblib": pca_path,
+            f"models/{model_id}/vps_index.bin": bundle.index_path,
+            f"models/{model_id}/vps_id_map.db": bundle.id_map_path,
         }
 
-        # 2. Check and Download from S3/MinIO
         for s3_key, local_path in required_files.items():
             if not local_path.exists():
-                logger.info(f"🚚 Downloading {s3_key} from {self.bucket}...")
-                success = s3_service.download_file(self.bucket, s3_key, local_path)
-                if not success:
-                    logger.error(f"❌ Failed to download {s3_key}")
+                logger.info(f"🚚 Downloading {s3_key}...")
+                s3_service.download_file(self.bucket, s3_key, local_path)
 
-        # 3. Load ONNX Inference Engine
-        if self.model_path.exists():
-            try:
-                self.inference = ONNXInference(str(self.model_path), pca_path=str(self.pca_path) if self.pca_path.exists() else None)
-                logger.info(f"✅ Loaded ONNX Model")
-            except Exception as e:
-                logger.error(f"❌ Failed to load ONNX: {e}")
+        # 2. Load Inference
+        if model_path.exists():
+            bundle.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
+        
+        # 3. Load Index
+        if bundle.index_path.exists():
+            bundle.vector_store = VectorStore(256)
+            bundle.vector_store.load(str(bundle.index_path), use_mmap=True)
+            if bundle.id_map_path.exists():
+                bundle.id_map_db = str(bundle.id_map_path)
+            
+            self.bundles[model_id] = bundle
+            logger.info(f"✅ Bundle '{model_id}' ready.")
 
-        # 4. Load FAISS
-        if self.index_path.exists():
-            try:
-                self.vector_store = VectorStore(256) 
-                self.vector_store.load(str(self.index_path), use_mmap=True)
-                logger.info(f"✅ Loaded MMAP Index: {self.index_path}")
-                
-                if self.id_map_path.exists():
-                    self.id_map_db = str(self.id_map_path)
-                    logger.info(f"✅ Using SQLite ID Map: {self.id_map_path}")
-            except Exception as e:
-                logger.error(f"❌ Failed to load Index: {e}")
+    def get_bundle(self, model_id: str = "best_model") -> ModelBundle:
+        return self.bundles.get(model_id)
 
-    def get_filename(self, idx: int) -> str:
-        if not self.id_map_db: return str(idx)
+    def get_filenames(self, bundle: ModelBundle, indices: List[int]) -> List[str]:
+        """Bulk lookup for search results."""
+        if not bundle.id_map_db:
+            return [str(idx) for idx in indices]
+        
+        results = {}
         try:
-            conn = sqlite3.connect(self.id_map_db)
+            conn = sqlite3.connect(bundle.id_map_db)
             cursor = conn.cursor()
-            cursor.execute("SELECT filename FROM id_map WHERE id = ?", (int(idx),))
-            row = cursor.fetchone()
+            # Batch query for efficiency
+            placeholders = ",".join(["?"] * len(indices))
+            cursor.execute(f"SELECT id, filename FROM id_map WHERE id IN ({placeholders})", indices)
+            results = {row[0]: row[1] for row in cursor.fetchall()}
             conn.close()
-            return row[0] if row else str(idx)
         except Exception as e:
-            logger.error(f"ID lookup failed: {e}")
-            return str(idx)
+            logger.error(f"Batch ID lookup failed: {e}")
+            
+        return [results.get(idx, str(idx)) for idx in indices]
 
-    def add_to_index(self, embedding: np.ndarray, filename: str):
-        """Thread-safe incremental update and write-back to cloud."""
+    def add_to_bundle_index(self, bundle: ModelBundle, embedding: np.ndarray, filename: str):
+        """Thread-safe incremental update and write-back to cloud for a specific bundle."""
         with self.lock:
             try:
                 # 1. Update In-memory FAISS
                 embedding = embedding.astype('float32')
-                self.vector_store.index.add(embedding)
-                new_id = self.vector_store.index.ntotal - 1
+                bundle.vector_store.index.add(embedding)
+                new_id = bundle.vector_store.index.ntotal - 1
                 
                 # 2. Update Local SQLite
-                conn = sqlite3.connect(self.id_map_db)
+                conn = sqlite3.connect(bundle.id_map_db)
                 cursor = conn.cursor()
                 cursor.execute("INSERT INTO id_map (id, filename) VALUES (?, ?)", (new_id, filename))
                 conn.commit()
                 conn.close()
                 
                 # 3. Save Index to disk
-                faiss.write_index(self.vector_store.index, str(self.index_path))
+                faiss.write_index(bundle.vector_store.index, str(bundle.index_path))
                 
-                # 4. Sync binaries back to S3 (Background synchronization)
-                # Note: We do this synchronously here to ensure consistency 
-                # but we could background it if upload is slow.
-                prefix = "models/best_model"
-                s3_service.upload_file(str(self.index_path), self.bucket, f"{prefix}/vps_index.bin")
-                s3_service.upload_file(str(self.id_map_path), self.bucket, f"{prefix}/vps_id_map.db")
+                # 4. Sync binaries back to S3
+                prefix = f"models/{bundle.name}"
+                s3_service.upload_file(str(bundle.index_path), self.bucket, f"{prefix}/vps_index.bin")
+                s3_service.upload_file(str(bundle.id_map_path), self.bucket, f"{prefix}/vps_id_map.db")
                 
-                logger.info(f"🚀 Incremental Index Complete: {filename} mapped to ID {new_id}")
+                logger.info(f"🚀 Incremental Index Complete [{bundle.name}]: {filename} -> ID {new_id}")
                 return True
             except Exception as e:
-                logger.error(f"Incremental update failed: {e}")
+                logger.error(f"Incremental update failed for {bundle.name}: {e}")
                 return False
 
 # Global context
@@ -133,10 +166,11 @@ async def startup_event():
     asyncio.create_task(asyncio.to_thread(ctx.initialize))
 
 @app.post("/v1/index")
-async def index_image(file: UploadFile = File(...)):
-    """Receives a new image, uploads to S3, and adds to FAISS index."""
-    if not ctx.inference or not ctx.vector_store:
-        raise HTTPException(status_code=503, detail="System initializing.")
+async def index_image(file: UploadFile = File(...), model: str = "best_model", api_key: str = Depends(get_api_key)):
+    """Receives a new image, uploads to S3, and adds to FAISS index of a specific model."""
+    bundle = ctx.get_bundle(model)
+    if not bundle or not bundle.inference or not bundle.vector_store:
+        raise HTTPException(status_code=503, detail=f"Model bundle '{model}' not ready or missing.")
 
     try:
         contents = await file.read()
@@ -163,20 +197,22 @@ async def index_image(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="Failed to upload image to storage")
 
         # 2. Extract embedding and add to vector store
-        embedding = ctx.inference.run(img_bgr)
+        embedding = bundle.inference.run(img_bgr)
         if embedding is None:
             raise HTTPException(status_code=500, detail="Feature extraction failed")
 
-        success_index = ctx.add_to_index(embedding, new_filename)
+        # Update specific bundle
+        success_index = ctx.add_to_bundle_index(bundle, embedding, new_filename)
         
         if not success_index:
             raise HTTPException(status_code=500, detail="Failed to update index")
 
         return {
             "status": "indexed",
+            "model": model,
             "filename": new_filename,
             "s3_key": s3_key,
-            "index_total": ctx.vector_store.index.ntotal
+            "index_total": bundle.vector_store.index.ntotal
         }
 
     except Exception as e:
@@ -184,9 +220,10 @@ async def index_image(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/v1/search")
-async def search_image(file: UploadFile = File(...), top_k: int = 50):
-    if not ctx.inference or not ctx.vector_store:
-        raise HTTPException(status_code=503, detail="System initializing or files missing.")
+async def search_image(file: UploadFile = File(...), top_k: int = 50, model: str = "best_model", api_key: str = Depends(get_api_key)):
+    bundle = ctx.get_bundle(model)
+    if not bundle or not bundle.inference or not bundle.vector_store:
+        raise HTTPException(status_code=503, detail=f"Model bundle '{model}' not ready or missing.")
 
     try:
         contents = await file.read()
@@ -195,18 +232,18 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50):
         if img_bgr is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
 
-        embedding = ctx.inference.run(img_bgr)
+        embedding = bundle.inference.run(img_bgr)
         if embedding is None:
             raise HTTPException(status_code=500, detail="Inference processing failed")
 
-        distances, indices = ctx.vector_store.search(embedding, k=top_k)
+        distances, indices = bundle.vector_store.search(embedding, k=top_k)
+
+        # Bulk ID Map lookup
+        valid_indices = [int(idx) for idx in indices if idx != -1]
+        filenames = ctx.get_filenames(bundle, valid_indices)
 
         results = []
-        for d, idx in zip(distances, indices):
-            if idx == -1: continue
-            
-            filename = ctx.get_filename(idx)
-            
+        for d, filename in zip(distances, filenames):
             # S3 lookup (case-insensitive)
             image_key = f"images/{filename.lower()}"
             image_url = s3_service.get_presigned_url(ctx.bucket, image_key)
@@ -217,7 +254,7 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50):
                 "image_url": image_url
             })
             
-        return {"query_id": file.filename, "results": results}
+        return {"query_id": file.filename, "model": model, "results": results}
 
     except Exception as e:
         logger.exception(f"Search failed: {e}")
@@ -225,11 +262,13 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50):
 
 @app.get("/health")
 def health():
-    logger.debug("Health check pinged")
     return {
         "status": "ready",
-        "model": ctx.inference is not None,
-        "index_count": ctx.vector_store.index.ntotal if ctx.vector_store and ctx.vector_store.index else 0
+        "models_loaded": list(ctx.bundles.keys()),
+        "details": {
+            name: {"ready": b.inference is not None, "count": b.vector_store.index.ntotal if b.vector_store else 0}
+            for name, b in ctx.bundles.items()
+        }
     }
 
 if __name__ == "__main__":
