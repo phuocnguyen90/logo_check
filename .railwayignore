@@ -1,0 +1,11 @@
+models/
+indexes/
+data/
+venv/
+.venv/
+__pycache__/
+*.bin
+*.joblib
+*.onnx
+*.onnx.data
+*.db
