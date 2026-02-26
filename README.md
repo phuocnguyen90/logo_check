@@ -9,8 +9,9 @@ A production-ready logo similarity search system for trademark images. Built wit
   - **Stage 2 (Local)**: 49x49 max-pooled patch similarity for structural/spatial verification.
 - **MoCo v3 Training**: Contrastive learning framework optimized for RTX 3060 (12GB VRAM) using a 65K negative queue.
 - **On-the-Fly Preprocessing**: Integrated text detection (Tesseract) and inpainting (OpenCV) with LRU caching.
-- **Production-Ready**: FastAPI service with ONNX Runtime (FP16) for accelerated GPU inference.
-- **Robustness**: Atomic checkpoints, automatic resume logic, and comprehensive error handling.
+- **Multi-Model Serving**: Serves both Visual Similarity and Figurative/Semantic models from a single API with automatic S3 synchronization.
+- **Rich Metadata Search**: Returns trademark names, Vienna classifications, and filing years alongside visual matches.
+- **Production-Ready**: FastAPI service with ONNX Runtime (FP16/CPU) and FAISS memory-mapping for low RAM footprint.
 
 ## Quick Start
 
