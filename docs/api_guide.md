@@ -40,10 +40,13 @@ Perform a visual search using an image file.
   "model": "best_model",
   "results": [
     {
-      "filename": "nike_logo_1971.jpg",
+      "filename": "775fc06d-0088-4e2f-a4f6-f17cbc35772a.JPG",
       "score": 0.9852,
+      "text": "CytoView",
+      "vienna_codes": ["27.05.01"],
+      "year": 2016,
       "image_url": "https://...", 
-      "proxied_url": "/v1/image/nike_logo_1971.jpg"
+      "proxied_url": "/v1/image/775fc06d-0088-4e2f-a4f6-f17cbc35772a.JPG"
     }
   ]
 }

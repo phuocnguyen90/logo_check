@@ -124,36 +124,43 @@ class APIContext:
     def get_bundle(self, model_id: str = "best_model") -> ModelBundle:
         return self.bundles.get(model_id)
 
-    def get_filenames(self, bundle: ModelBundle, indices: List[int]) -> List[str]:
+    def get_metadata_batch(self, bundle: ModelBundle, indices: List[int]) -> List[Dict[str, Any]]:
         """Bulk lookup for search results (SQLite first, JSON fallback)."""
         if not bundle.id_map_db and not bundle.id_map_list:
-            return [str(idx) for idx in indices]
+            return [{"filename": str(idx)} for idx in indices]
         
-        # Scenario A: SQLite lookup
+        # Scenario A: SQLite lookup (Rich Metadata)
         if bundle.id_map_db:
             results = {}
             try:
                 conn = sqlite3.connect(bundle.id_map_db)
                 cursor = conn.cursor()
                 placeholders = ",".join(["?"] * len(indices))
-                cursor.execute(f"SELECT id, filename FROM id_map WHERE id IN ({placeholders})", indices)
-                results = {row[0]: row[1] for row in cursor.fetchall()}
+                # Fetch all rich metadata columns
+                cursor.execute(f"SELECT id, filename, tm_text, vienna_codes, year FROM id_map WHERE id IN ({placeholders})", indices)
+                for row in cursor.fetchall():
+                    results[row[0]] = {
+                        "filename": row[1],
+                        "text": row[2],
+                        "vienna_codes": row[3].split(",") if row[3] else [],
+                        "year": row[4]
+                    }
                 conn.close()
-                return [results.get(idx, str(idx)) for idx in indices]
+                return [results.get(idx, {"filename": str(idx)}) for idx in indices]
             except Exception as e:
-                logger.error(f"Batch ID lookup failed: {e}")
+                logger.error(f"Batch metadata lookup failed: {e}")
 
-        # Scenario B: JSON List fallback
+        # Scenario B: JSON List fallback (Filename only)
         if bundle.id_map_list:
             res = []
             for idx in indices:
                 try:
-                    res.append(bundle.id_map_list[idx])
+                    res.append({"filename": bundle.id_map_list[idx]})
                 except (IndexError, TypeError):
-                    res.append(str(idx))
+                    res.append({"filename": str(idx)})
             return res
             
-        return [str(idx) for idx in indices]
+        return [{"filename": str(idx)} for idx in indices]
 
     def add_to_bundle_index(self, bundle: ModelBundle, embedding: np.ndarray, filename: str):
         """Thread-safe incremental update and write-back to cloud for a specific bundle."""
@@ -271,15 +278,19 @@ async def search_image(
 
         lengths, indices = bundle.vector_store.search(embedding, k=top_k)
 
-        # Bulk ID Map lookup
+        # Bulk ID Map lookup (Now returns rich metadata)
         valid_indices = [int(idx) for idx in indices if idx != -1]
-        filenames = ctx.get_filenames(bundle, valid_indices)
+        metadata_results = ctx.get_metadata_batch(bundle, valid_indices)
 
         results = []
-        for d, filename in zip(lengths, filenames):
+        for d, meta in zip(lengths, metadata_results):
+            filename = meta["filename"]
             res = {
                 "score": float(d),
                 "filename": filename,
+                "text": meta.get("text", ""),
+                "vienna_codes": meta.get("vienna_codes", []),
+                "year": meta.get("year"),
                 "proxied_url": f"/v1/image/{filename}"
             }
             
