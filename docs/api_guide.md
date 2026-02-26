@@ -68,36 +68,36 @@ Serve images directly from S3 without requiring client-side credentials or worry
 
 ## 🖼 How to Render Search Results (Recommended)
 
-To ensure high performance and avoid authentication issues in the browser, follow this **ID-to-Storage** strategy.
+To ensure high performance and avoid authentication issues in the browser, you should use the provided `proxied_url`.
 
 ### The Problem
 Generating presigned URLs in our backend and passing them to your frontend can cause:
 1. **Latency**: Each URL generation adds overhead.
-2. **CORS/Auth**: Browsers might block these URLs if not configured for your specific frontend domain.
+2. **CORS/Auth**: Browsers often block S3 presigned URLs due to cross-origin policies or lack of direct credentials.
 
-### The Solution: Direct S3 Access
-Your frontend or proxy service should use the returned `id` (which is the exact filename) to construct the final image URL using your own AWS/S3 credentials OR a public CDN proxy.
+### The Solution: Using the Image Proxy
+The API provides a `proxied_url` (e.g., `/v1/image/apple.jpg`) for every result. This endpoint handles the S3 connection on the server side and streams the image directly to the client. **This endpoint is public** and does not require an API key, making it perfect for tags like `<img src="..." />`.
 
-#### 1. Constructing the S3 Path
-The logos are stored in a flat structure under the `images/` prefix.
-- **Result ID**: `775fc06d.jpg`
-- **S3 Key**: `images/775fc06d.jpg` (Note: Ensure the filename is lowercased if not found).
-
-#### 2. Frontend React/Next.js Example
-The easiest way to display results is using the `proxied_url`:
+#### 1. Frontend React/Next.js Example
+The easiest way to display results:
 
 ```javascript
 // Inside your Result component
 const LogoThumb = ({ proxied_url, filename }) => {
-  // Use the proxied URL directly from the API response
+  // Combine the Base URL with the relative proxied_url
   const src = `https://logocheck-production.up.railway.app${proxied_url}`;
 
-  return <img src={src} alt={filename} loading="lazy" />;
+  return (
+    <div className="logo-card">
+      <img src={src} alt={filename} loading="lazy" />
+      <p>Similarity: {filename}</p>
+    </div>
+  );
 };
 ```
 
-#### 3. Backend Implementation (Node.js/Boto3)
-If you are proxying the images from another service:
+#### 2. Backend Implementation (Advanced)
+If you prefer to handle S3 retrieval in your own backend:
 
 ```python
 # Pseudo-code for a consuming service
@@ -106,11 +106,13 @@ def get_search_results():
     results = api_resp.json()["results"]
     
     for item in results:
+        # The 'filename' is the exact key name in S3
+        filename = item['filename']
         # Construct the key for your own S3 client
-        s3_key = f"images/{item['id'].lower()}"
-        # Fetch or Presign using YOUR service's IAM permissions
+        s3_key = f"images/{filename.lower()}"
+        # Fetch or Presign using YOUR service's own credentials
         authorized_url = my_s3_client.presign(s3_key)
-        item["view_url"] = authorized_url
+        item["my_custom_url"] = authorized_url
         
     return results
 ```
@@ -128,7 +130,7 @@ def get_search_results():
 
 ## ⚠️ Important Integration Notes
 
-1. **Filenames**: The `id` returned is the **exact filename** as it exists in the S3 bucket.
-2. **Case Sensitivity**: While S3 is case-sensitive, our system primarily uses lowercase filenames. If a lookup fails, try `id.lower()`.
+1. **Filenames**: The `filename` returned is the **exact filename** as it exists in the S3 bucket.
+2. **Case Sensitivity**: While S3 is case-sensitive, our system primarily uses lowercase filenames in the bucket.
 3. **Caching**: We recommend caching the search results for identical query images (using a file hash) for at least 1 hour.
-4. **Rate Limiting**: Currently set to 60 requests per minute. If you need more, please contact the infra team.
+4. **Rate Limiting**: Currently set to 60 requests per minute on protected endpoints.

@@ -222,7 +222,13 @@ async def index_image(file: UploadFile = File(...), model: str = "best_model", a
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/v1/search")
-async def search_image(file: UploadFile = File(...), top_k: int = 50, model: str = "best_model", api_key: str = Depends(get_api_key)):
+async def search_image(
+    file: UploadFile = File(...), 
+    top_k: int = 50, 
+    model: str = "best_model", 
+    include_url: bool = False,
+    api_key: str = Depends(get_api_key)
+):
     bundle = ctx.get_bundle(model)
     if not bundle or not bundle.inference or not bundle.vector_store:
         raise HTTPException(status_code=503, detail=f"Model bundle '{model}' not ready or missing.")
@@ -238,27 +244,26 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50, model: str
         if embedding is None:
             raise HTTPException(status_code=500, detail="Inference processing failed")
 
-        distances, indices = bundle.vector_store.search(embedding, k=top_k)
+        lengths, indices = bundle.vector_store.search(embedding, k=top_k)
 
         # Bulk ID Map lookup
         valid_indices = [int(idx) for idx in indices if idx != -1]
         filenames = ctx.get_filenames(bundle, valid_indices)
 
         results = []
-        for d, filename in zip(distances, filenames):
-            # S3 lookup (case-insensitive)
-            image_key = f"images/{filename.lower()}"
-            image_url = s3_service.get_presigned_url(ctx.bucket, image_key)
-            
-            # Proxied URL for easier frontend consumption
-            proxied_url = f"/v1/image/{filename}"
-            
-            results.append({
+        for d, filename in zip(lengths, filenames):
+            res = {
                 "score": float(d),
                 "filename": filename,
-                "image_url": image_url,
-                "proxied_url": proxied_url
-            })
+                "proxied_url": f"/v1/image/{filename}"
+            }
+            
+            # Optional: S3 presigned URL
+            if include_url:
+                image_key = f"images/{filename.lower()}"
+                res["image_url"] = s3_service.get_presigned_url(ctx.bucket, image_key)
+            
+            results.append(res)
             
         return {"query_id": file.filename, "model": model, "results": results}
 
