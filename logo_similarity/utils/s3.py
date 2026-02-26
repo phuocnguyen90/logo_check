@@ -71,6 +71,14 @@ class S3Service:
             logger.error(f"Error generating presigned URL: {e}")
             return None
 
+    def get_object(self, bucket, object_name):
+        """Fetch an object from S3"""
+        try:
+            return self.client.get_object(Bucket=bucket, Key=object_name)
+        except ClientError as e:
+            logger.error(f"Error fetching object {object_name}: {e}")
+            return None
+
     def create_bucket_if_not_exists(self, bucket_name):
         """Create an S3 bucket if it doesn't already exist"""
         try:

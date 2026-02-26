@@ -40,9 +40,10 @@ Perform a visual search using an image file.
   "model": "best_model",
   "results": [
     {
-      "id": "nike_logo_1971.jpg",
+      "filename": "nike_logo_1971.jpg",
       "score": 0.9852,
-      "image_url": "Optional: https://..." 
+      "image_url": "https://...", 
+      "proxied_url": "/v1/image/nike_logo_1971.jpg"
     }
   ]
 }
@@ -56,6 +57,12 @@ Add a new logo to the database and vector index in real-time.
   - `file`: The logo to register.
 - **Query Parameters**:
   - `model`: Which index to update (defaults to `best_model`).
+
+### 3. Image Proxy (Public)
+Serve images directly from S3 without requiring client-side credentials or worrying about presigned URL expiration.
+
+- **Endpoint**: `GET /v1/image/{filename}`
+- **Parameters**: `filename` (String)
 
 ---
 
@@ -77,18 +84,15 @@ The logos are stored in a flat structure under the `images/` prefix.
 - **S3 Key**: `images/775fc06d.jpg` (Note: Ensure the filename is lowercased if not found).
 
 #### 2. Frontend React/Next.js Example
-If your web application has a backend proxy for images:
+The easiest way to display results is using the `proxied_url`:
 
 ```javascript
 // Inside your Result component
-const LogoThumb = ({ id }) => {
-  // Option A: Your own proxy that handles S3 auth
-  const src = `https://your-api.com/proxy/logos/${id}`;
-  
-  // Option B: Direct S3 URL (if you have a PUBLIC bucket or handle auth on frontend)
-  const directPath = `https://t3.storageapi.dev/l3d-bucket/images/${id}`;
+const LogoThumb = ({ proxied_url, filename }) => {
+  // Use the proxied URL directly from the API response
+  const src = `https://logocheck-production.up.railway.app${proxied_url}`;
 
-  return <img src={src} alt="logo match" loading="lazy" />;
+  return <img src={src} alt={filename} loading="lazy" />;
 };
 ```
 

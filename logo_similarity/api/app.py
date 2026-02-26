@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Security
 from fastapi.security.api_key import APIKeyHeader, APIKey
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 import uvicorn
 import cv2
 import numpy as np
@@ -248,10 +248,14 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50, model: str
             image_key = f"images/{filename.lower()}"
             image_url = s3_service.get_presigned_url(ctx.bucket, image_key)
             
+            # Proxied URL for easier frontend consumption
+            proxied_url = f"/v1/image/{filename}"
+            
             results.append({
                 "score": float(d),
                 "filename": filename,
-                "image_url": image_url
+                "image_url": image_url,
+                "proxied_url": proxied_url
             })
             
         return {"query_id": file.filename, "model": model, "results": results}
@@ -259,6 +263,23 @@ async def search_image(file: UploadFile = File(...), top_k: int = 50, model: str
     except Exception as e:
         logger.exception(f"Search failed: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/v1/image/{filename}")
+async def get_image(filename: str):
+    """Proxy image delivery from S3 to bypass browser/credential issues."""
+    image_key = f"images/{filename.lower()}"
+    try:
+        response = s3_service.get_object(ctx.bucket, image_key)
+        if not response:
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        return StreamingResponse(
+            response['Body'], 
+            media_type=response.get('ContentType', 'image/jpeg')
+        )
+    except Exception as e:
+        logger.error(f"Failed to serve image {filename}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/health")
 def health():
