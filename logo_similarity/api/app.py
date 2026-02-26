@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 import json
 import os
+import sqlite3
+import faiss
 from pathlib import Path
 from typing import List, Dict, Any, Union
 
