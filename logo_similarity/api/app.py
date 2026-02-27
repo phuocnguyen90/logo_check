@@ -37,6 +37,7 @@ app.add_middleware(
 
 # 2. API Key Security
 import hashlib
+import psutil
 LOGO_API_KEY_ENV = os.getenv("LOGO_API_KEY", "dev_key_change_me")
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -459,8 +460,12 @@ async def get_image(filename: str):
 
 @app.get("/health")
 def health():
+    process = psutil.Process(os.getpid())
+    ram_mb = process.memory_info().rss / (1024 * 1024)
+    
     return {
         "status": "ready",
+        "memory_usage_mb": round(ram_mb, 2),
         "models_in_memory": list(ctx.bundles.keys()),
         "enabled_models": ctx.enabled_models,
         "details": {
