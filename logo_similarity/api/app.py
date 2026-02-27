@@ -31,16 +31,45 @@ app.add_middleware(
 )
 
 # 2. API Key Security
-API_KEY = os.getenv("API_KEY", "dev_key_change_me")
+import hashlib
+LOGO_API_KEY_ENV = os.getenv("LOGO_API_KEY", "dev_key_change_me")
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
+def verify_db_key(key: str) -> bool:
+    """Check if key exists and is active in metadata_v2.db"""
+    db_path = paths.MASTER_METADATA_DB
+    if not db_path.exists():
+        return False
+        
+    khash = hashlib.sha256(key.encode()).hexdigest()
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM api_keys WHERE key_hash = ? AND is_active = 1",
+            (khash,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except Exception as e:
+        logger.error(f"Auth DB error: {e}")
+        return False
+
 async def get_api_key(header_key: str = Security(api_key_header)):
-    if header_key == API_KEY:
+    # 1. Check Master ENV key (for internal/dev use)
+    if header_key == LOGO_API_KEY_ENV:
         return header_key
+        
+    # 2. Check DB keys (for production clients)
+    if header_key and verify_db_key(header_key):
+        return header_key
+        
     raise HTTPException(
         status_code=403, detail="Could not validate credentials"
     )
+
 
 import asyncio
 import uuid

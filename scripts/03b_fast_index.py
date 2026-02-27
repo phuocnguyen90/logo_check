@@ -58,27 +58,42 @@ def fast_build_index():
     chunks_dir.mkdir(exist_ok=True)
 
     # 2. Setup Data
-    metadata_path = paths.TOY_DATASET_METADATA if args.toy else paths.DATASET_METADATA
-    print(f"📂 Loading metadata: {metadata_path}")
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
+    # Streaming filenames from SQLite instead of loading 2GB JSON
+    db_path = paths.DATA_DIR / "metadata_v2.db"
+    print(f"📂 Connecting to SQLite master: {db_path}")
+    
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # If toy, we just take first 10k from train. Else all.
+    if args.toy:
+        print("🧸 Mode: TOY (First 50,000 images)")
+        cursor.execute("SELECT filename FROM trademarks LIMIT 50000")
+    else:
+        print("🌐 Mode: FULL (All trademarks)")
+        cursor.execute("SELECT filename FROM trademarks")
+    
+    # We only need the list of filenames in memory, which is much smaller than full objects
+    all_filenames = [row[0] for row in cursor.fetchall()]
+    conn.close()
 
     # Resumability logic
     processed_ids = set()
     if not args.build_only:
         for chunk_file in chunks_dir.glob("*.npz"):
             try:
-                with np.load(chunk_file) as data:
+                with np.load(chunk_file, mmap_mode='r') as data:
                     processed_ids.update(data['ids'].tolist())
             except:
                 chunk_file.unlink()
         
-        initial_count = len(metadata)
-        # Slim down metadata to ONLY what the dataset needs (saves RAM in workers)
-        metadata = [{"file": m.get('file') or m.get('image')} for m in metadata 
-                    if (m.get('file') or m.get('image')) not in processed_ids]
+        initial_count = len(all_filenames)
+        # Filter in-place
+        metadata = [{"file": f} for f in all_filenames if f not in processed_ids]
         
         # Free memory immediately
+        del all_filenames
         del processed_ids
         import gc
         gc.collect()
@@ -88,8 +103,9 @@ def fast_build_index():
         print("⏭️ Build-only mode: Skipping extraction stage.")
         metadata = []
 
-    if not metadata:
+    if not metadata and not args.build_only:
         print("✅ Everything already processed.")
+
     else:
         # 3. Model Setup
         print("🤖 Loading model to GPU...")

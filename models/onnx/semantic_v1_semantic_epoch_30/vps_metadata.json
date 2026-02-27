@@ -1,0 +1,11 @@
+{
+  "checkpoint": "/home/phuoc/git/l3d/tm-dataset/models/checkpoints/semantic_v1_semantic_epoch_30.pth",
+  "total_images": 769674,
+  "reduced_dim": 256,
+  "built_at": "2026-02-25T13:56:15.697536",
+  "files": {
+    "model": "model_quant.onnx",
+    "pca": "pca_model.joblib",
+    "index": "vps_index.bin"
+  }
+}

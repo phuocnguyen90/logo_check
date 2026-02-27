@@ -15,6 +15,7 @@ import os
 import sys
 import subprocess
 import time
+import sqlite3
 from typing import Optional, List, Dict, Any
 
 # Add project root to path
@@ -183,25 +184,62 @@ def load_index(checkpoint_name: str):
     return store, id_list
 
 
+class DatabaseMetadataLookup:
+    """Lazy lookup for trademark metadata using SQLite."""
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.cache = {} # Optional small cache for frequently accessed items
+        
+    def get(self, filename: str, default=None) -> Dict[str, Any]:
+        if not filename: return default
+        
+        # Canonical name check
+        name = normalize_name(filename)
+        if name in self.cache: return self.cache[name]
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Try original filename and lower variant
+            cursor.execute("""
+                SELECT t.filename, t.tm_text, t.year,
+                       GROUP_CONCAT(vc.code, ',') as codes
+                FROM trademarks t
+                LEFT JOIN trademark_vienna tv ON tv.trademark_id = t.id
+                LEFT JOIN vienna_codes vc ON vc.id = tv.vienna_code_id
+                WHERE t.filename = ? OR LOWER(t.filename) = ?
+                GROUP BY t.id
+            """, (filename, name))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                res = {
+                    "file": row[0],
+                    "text": row[1],
+                    "year": row[2],
+                    "vienna_codes": row[3].split(",") if row[3] else []
+                }
+                # Minimal cache to avoid redundant queries in tight loops
+                if len(self.cache) < 1000:
+                    self.cache[name] = res
+                return res
+        except Exception as e:
+            logger.error(f"DB Metadata lookup error: {e}")
+            
+        return default
+
 @st.cache_resource
 def load_metadata():
-    """Load dataset metadata."""
-    meta_path = paths.DATASET_METADATA
-    if not meta_path.exists():
-        meta_path = paths.TOY_DATASET_METADATA
-    if not meta_path.exists():
-        return {}
+    """Load dataset metadata proxy."""
+    db_path = paths.DATA_DIR / "metadata_v2.db"
+    if not db_path.exists():
+        st.warning(f"Metadata DB not found at {db_path}. Using fallback.")
+        return {} # Or implement legacy JSON fallback here if needed
+        
+    return DatabaseMetadataLookup(db_path)
 
-    with open(meta_path, "r") as f:
-        items = json.load(f)
-
-    return {
-        (m.get('image') or m.get('file')).lower(): {
-            "text": m.get("text", ""),
-            "file": m.get("image") or m.get("file")
-        } 
-        for m in items if m.get('image') or m.get('file')
-    }
 
 
 @st.cache_resource

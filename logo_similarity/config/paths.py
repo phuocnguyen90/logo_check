@@ -14,11 +14,12 @@ INDEXES_DIR = BASE_DIR / "indexes"
 # Dataset Location
 RAW_DATASET_DIR = Path(os.getenv("RAW_DATASET_DIR", DATA_DIR / "raw"))
 DATASET_METADATA = RAW_DATASET_DIR / "results.json"
-TOY_DATASET_METADATA = DATA_DIR / "toy_results.json"  # New toy dataset path
+TOY_DATASET_METADATA = DATA_DIR / "toy_results.json"
+MASTER_METADATA_DB = DATA_DIR / "metadata_v2.db" # <--- Normalized master DB
 
 # Processed Data Paths
 SPLITS_DIR = DATA_DIR / "splits"
-TOY_SPLITS_DIR = DATA_DIR / "toy_splits"  # <--- New
+TOY_SPLITS_DIR = DATA_DIR / "toy_splits"
 VALIDATION_DIR = DATA_DIR / "validation"
 TOY_VALIDATION_DIR = DATA_DIR / "toy_validation" # <--- New
 LOGS_DIR = BASE_DIR / "logs"

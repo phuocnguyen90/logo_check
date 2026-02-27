@@ -61,11 +61,15 @@ This app tests the **Production Backend Pipeline**:
 
 # Configuration
 backend_url = st.sidebar.text_input("Backend API URL", value="http://localhost:8000")
+logo_api_key = os.getenv("LOGO_API_KEY", "dev_key_change_me")
 top_k = st.sidebar.slider("Top K Results", 1, 100, 20)
+
+# Set common headers
+headers = {"X-API-Key": logo_api_key}
 
 # 1. Health Check
 try:
-    health_resp = requests.get(f"{backend_url}/health", timeout=2)
+    health_resp = requests.get(f"{backend_url}/health", headers=headers, timeout=2)
     if health_resp.status_code == 200:
         health = health_resp.json()
         st.sidebar.success(f"Backend: {health.get('status', 'ready')}")
@@ -97,7 +101,8 @@ if uploaded_file is not None:
                     response = requests.post(
                         f"{backend_url}/v1/search",
                         params={"top_k": top_k},
-                        files=files
+                        files=files,
+                        headers=headers
                     )
                     
                     if response.status_code == 200:
