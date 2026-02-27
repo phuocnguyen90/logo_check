@@ -1,0 +1,61 @@
+#!/bin/bash
+# setup_remote.sh - Prepare a remote VPS (e.g., Vast.ai) for training
+
+set -e
+
+echo "Setting up remote environment..."
+
+# 1. Install System Dependencies
+echo "Installing system dependencies..."
+apt-get update && apt-get install -y tesseract-ocr libgl1 libglib2.0-0 unzip
+
+# 2. Install Python Dependencies
+echo "Installing python dependencies..."
+pip install --upgrade pip
+
+# Install main requirements
+# Note: We handle FAISS separately because faiss-gpu often fails on newer Python/Ubuntu
+grep -v "faiss" requirements.txt > requirements_remote.txt
+pip install -r requirements_remote.txt
+
+# Try to install FAISS with GPU support, fallback to CPU
+echo "Installing FAISS (attempting GPU, then CPU)..."
+pip install faiss-gpu-cu12 || pip install faiss-gpu || pip install faiss-cpu
+
+# 3. Download Dataset from Kaggle
+if [ -z "$KAGGLE_USERNAME" ] || [ -z "$KAGGLE_KEY" ]; then
+    echo "ERROR: KAGGLE_USERNAME and KAGGLE_KEY environment variables must be set."
+    echo "Get them from your Kaggle account settings (Create New API Token)."
+    exit 1
+fi
+
+RAW_DIR="data/raw"
+mkdir -p "$RAW_DIR"
+
+if [ ! -f "$RAW_DIR/results.json" ]; then
+    echo "Downloading dataset from Kaggle..."
+    mkdir -p ~/.kaggle
+    echo "{\"username\":\"$KAGGLE_USERNAME\",\"key\":\"$KAGGLE_KEY\"}" > ~/.kaggle/kaggle.json
+    chmod 600 ~/.kaggle/kaggle.json
+    
+    # Download the dataset
+    echo "Downloading dataset (this may take a few minutes)..."
+    kaggle datasets download -d konradb/ziilogos -p "$RAW_DIR"
+    
+    echo "Extracting dataset (silently to avoid SSH timeout)..."
+    unzip -oq "$RAW_DIR/ziilogos.zip" -d "$RAW_DIR"
+    
+    echo "Cleaning up and organizing files..."
+    # The ziilogos dataset usually extracts into a subfolder. 
+    # Let's align it with our RAW_DATASET_DIR path.
+    if [ -d "$RAW_DIR/L3D dataset" ]; then
+        mv "$RAW_DIR/L3D dataset/"* "$RAW_DIR/" || true
+        rm -rf "$RAW_DIR/L3D dataset"
+    fi
+    
+    rm -f "$RAW_DIR/ziilogos.zip"
+else
+    echo "Dataset already found in $RAW_DIR, skipping download."
+fi
+
+echo "Setup complete!"

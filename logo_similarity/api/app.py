@@ -9,8 +9,13 @@ import json
 import os
 import sqlite3
 import faiss
+import asyncio
+import time
+import gc
+import threading
+import uuid
+from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
-from typing import List, Dict, Any, Union
 
 # Minimal imports for production
 from ..config import settings, paths
@@ -31,20 +36,31 @@ app.add_middleware(
 )
 
 # 2. API Key Security
-API_KEY = os.getenv("API_KEY", "dev_key_change_me")
+import hashlib
+LOGO_API_KEY_ENV = os.getenv("LOGO_API_KEY", "dev_key_change_me")
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def get_api_key(header_key: str = Security(api_key_header)):
-    if header_key == API_KEY:
+    # 1. Check Master ENV key (for internal/dev use)
+    if header_key == LOGO_API_KEY_ENV:
         return header_key
+        
+    # 2. Check DB keys (verified via Context)
+    if header_key and ctx.verify_api_key(header_key):
+        return header_key
+        
     raise HTTPException(
         status_code=403, detail="Could not validate credentials"
     )
 
+
+
 import asyncio
-import uuid
+import time
+import gc
 import threading
+import uuid
 
 class ModelBundle:
     def __init__(self, name: str):
@@ -52,77 +68,191 @@ class ModelBundle:
         self.inference = None
         self.vector_store = None
         self.id_map_db = None
-        self.id_map_list = None # Fallback for JSON mapping
+        self.id_map_list = None
         self.index_path = None
         self.id_map_path = None
+        self.last_used = time.time()
+
+    def touch(self):
+        self.last_used = time.time()
 
 class APIContext:
     def __init__(self):
         self.bundles: Dict[str, ModelBundle] = {}
         self.lock = threading.Lock()
         self.bucket = os.getenv("RAILWAY_BUCKET_NAME") or os.getenv("MINIO_BUCKET", "l3d")
-        # List of models to load on startup, e.g. "best_model,semantic_v1"
-        self.enabled_models = os.getenv("SERVE_MODELS", "best_model").split(",")
+        self.enabled_models = [m.strip() for m in os.getenv("SERVE_MODELS", "best_model").split(",")]
+        self.idle_timeout = int(os.getenv("MODEL_IDLE_TIMEOUT", 300)) # Default 5 mins
+        
+        # Master Metadata & Auth State
+        self._auth_cache: Dict[str, bool] = {}
+        self.last_activity = time.time()
+        self.last_master_access = time.time() # For auth/master DB activity
 
     def initialize(self):
-        """Warm up all enabled models."""
+        """Ensure local files exist by checking/downloading from S3."""
+        logger.info(f"💾 Initializing API Context (Enabled: {self.enabled_models})")
+        self.touch()
+        # 1. Ensure Master Metadata DB is present
+        master_db_path = paths.MASTER_METADATA_DB
+        if not master_db_path.exists():
+            logger.info("🚚 Downloading Master Metadata DB from S3...")
+            try:
+                s3_service.download_file(self.bucket, f"data/{master_db_path.name}", master_db_path)
+            except Exception as e:
+                logger.error(f"Failed to download master DB: {e}")
+
+        # 2. Sync enabled models
         for model_id in self.enabled_models:
-            model_id = model_id.strip()
-            self.load_bundle(model_id)
+            self._ensure_files_locally(model_id)
 
-    def load_bundle(self, model_id: str):
-        """Download and load a specific model bundle."""
-        logger.info(f"🏗 Preparing bundle: {model_id}")
+    def touch(self):
+        """Updates the global activity timer."""
+        self.last_activity = time.time()
+
+    def _ensure_files_locally(self, model_id: str):
+        """Purely file-level sync. Does NOT load into memory."""
         onnx_dir = paths.MODELS_DIR / "onnx" / model_id
+        onnx_dir.mkdir(parents=True, exist_ok=True)
         
-        bundle = ModelBundle(model_id)
-        model_path = onnx_dir / "model.onnx"
-        pca_path = onnx_dir / "pca_model.joblib"
-        bundle.index_path = onnx_dir / "vps_index.bin"
-        bundle.id_map_path = onnx_dir / "vps_id_map.db"
-        id_map_json_path = onnx_dir / "vps_id_map.json"
-
-        # 1. Download if missing
         required_files = {
-            f"models/{model_id}/model.onnx": model_path,
+            f"models/{model_id}/model.onnx": onnx_dir / "model.onnx",
             f"models/{model_id}/model.onnx.data": onnx_dir / "model.onnx.data",
-            f"models/{model_id}/pca_model.joblib": pca_path,
-            f"models/{model_id}/vps_index.bin": bundle.index_path,
-            f"models/{model_id}/vps_id_map.db": bundle.id_map_path,
-            f"models/{model_id}/vps_id_map.json": id_map_json_path,
+            f"models/{model_id}/pca_model.joblib": onnx_dir / "pca_model.joblib",
+            f"models/{model_id}/vps_index.bin": onnx_dir / "vps_index.bin",
+            f"models/{model_id}/vps_id_map.db": onnx_dir / "vps_id_map.db",
+            f"models/{model_id}/vps_id_map.json": onnx_dir / "vps_id_map.json",
         }
 
         for s3_key, local_path in required_files.items():
             if not local_path.exists():
-                logger.info(f"🚚 Downloading {s3_key}...")
-                s3_service.download_file(self.bucket, s3_key, local_path)
-
-        # 2. Load Inference
-        if model_path.exists():
-            bundle.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
-        
-        # 3. Load Index & ID Map
-        if bundle.index_path.exists():
-            bundle.vector_store = VectorStore(256)
-            bundle.vector_store.load(str(bundle.index_path), use_mmap=True)
-            
-            # Prefer SQLite for efficiency
-            if bundle.id_map_path.exists():
-                bundle.id_map_db = str(bundle.id_map_path)
-            # Fallback to JSON if DB is missing
-            elif id_map_json_path.exists():
-                logger.info(f"📂 Loading fallback JSON ID map for {model_id}...")
+                logger.info(f"🚚 Downloading {s3_key} to persistent volume...")
                 try:
-                    with open(id_map_json_path, 'r') as f:
-                        bundle.id_map_list = json.load(f)
+                    s3_service.download_file(self.bucket, s3_key, local_path)
                 except Exception as e:
-                    logger.error(f"Failed to load JSON ID map: {e}")
+                    logger.warning(f"Could not download {s3_key}: {e}. (May not exist)")
+    def verify_api_key(self, key: str) -> bool:
+        """Verified key against cache or DB, then touches activity timer."""
+        self.touch()
+        
+        # 1. Check RAM cache
+        if key in self._auth_cache:
+            return self._auth_cache[key]
+            
+        # 2. Check DB
+        db_path = paths.MASTER_METADATA_DB
+        self._ensure_master_db(db_path)
+        
+        if not db_path.exists():
+            return False
+            
+        khash = hashlib.sha256(key.encode()).hexdigest()
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM api_keys WHERE key_hash = ? AND is_active = 1", (khash,))
+            valid = cursor.fetchone() is not None
+            conn.close()
+            
+            # Cache for future use (will be cleared after 5m idle)
+            self._auth_cache[key] = valid
+            return valid
+        except Exception as e:
+            logger.error(f"Auth DB error: {e}")
+            return False
+
+    def _ensure_master_db(self, path: Path):
+        """Download master DB if missing."""
+        if not path.exists():
+            logger.info("🚚 Downloading Master Metadata DB from S3...")
+            try:
+                s3_service.download_file(self.bucket, f"data/{path.name}", path)
+            except Exception as e:
+                logger.error(f"Failed to download master DB: {e}")
+
+    def get_bundle(self, model_id: str) -> Optional[ModelBundle]:
+        """Get or load model bundle on demand."""
+        self.touch()
+        if model_id not in self.enabled_models:
+            return None
+
+        with self.lock:
+            if model_id in self.bundles:
+                bundle = self.bundles[model_id]
+                bundle.touch()
+                return bundle
+
+            # Load into memory on demand
+            logger.info(f"🧠 Loading model '{model_id}' into memory (on-demand)")
+            self._ensure_files_locally(model_id)
+            
+            onnx_dir = paths.MODELS_DIR / "onnx" / model_id
+            bundle = ModelBundle(model_id)
+            model_path = onnx_dir / "model.onnx"
+            pca_path = onnx_dir / "pca_model.joblib"
+            bundle.index_path = onnx_dir / "vps_index.bin"
+            bundle.id_map_path = onnx_dir / "vps_id_map.db"
+            id_map_json_path = onnx_dir / "vps_id_map.json"
+
+            if model_path.exists():
+                bundle.inference = ONNXInference(str(model_path), pca_path=str(pca_path) if pca_path.exists() else None)
+            
+            if bundle.index_path.exists():
+                bundle.vector_store = VectorStore(256)
+                bundle.vector_store.load(str(bundle.index_path), use_mmap=True)
+                
+                if bundle.id_map_path.exists():
+                    bundle.id_map_db = str(bundle.id_map_path)
+                elif id_map_json_path.exists():
+                    try:
+                        with open(id_map_json_path, 'r') as f:
+                            bundle.id_map_list = json.load(f)
+                    except: pass
             
             self.bundles[model_id] = bundle
-            logger.info(f"✅ Bundle '{model_id}' ready.")
+            return bundle
 
-    def get_bundle(self, model_id: str = "best_model") -> ModelBundle:
-        return self.bundles.get(model_id)
+    async def cleanup_loop(self):
+        """Background task to offload inactive models and caches."""
+        logger.info(f"⏲️ Starting inactivity cleanup loop (Timeout: {self.idle_timeout}s)")
+        while True:
+            await asyncio.sleep(60) # Check every minute
+            now = time.time()
+            
+            # 1. Check Global Activity
+            is_idle = (now - self.last_activity) > self.idle_timeout
+            
+            if is_idle:
+                with self.lock:
+                    if self._auth_cache or self.bundles:
+                        logger.info("❄️ Service idle: Offloading all models and clearing auth cache.")
+                        self._auth_cache.clear()
+                        
+                        for mid in list(self.bundles.keys()):
+                            bundle = self.bundles.pop(mid)
+                            del bundle.inference
+                            del bundle.vector_store
+                            del bundle
+                            
+                        # Aggressive GC
+                        gc.collect()
+                        logger.info("🧹 RAM footprint minimized.")
+            else:
+                # 2. Selective offloading (if some models are idle but others aren't)
+                to_unload = []
+                with self.lock:
+                    for mid, bundle in self.bundles.items():
+                        if now - bundle.last_used > self.idle_timeout:
+                            to_unload.append(mid)
+                    
+                    for mid in to_unload:
+                        logger.info(f"❄️ Offloading inactive model: {mid}")
+                        bundle = self.bundles.pop(mid)
+                        del bundle
+                
+                if to_unload:
+                    gc.collect()
+
 
     def get_metadata_batch(self, bundle: ModelBundle, indices: List[int]) -> List[Dict[str, Any]]:
         """Bulk lookup for search results (SQLite first, JSON fallback)."""
@@ -197,7 +327,10 @@ ctx = APIContext()
 
 @app.on_event("startup")
 async def startup_event():
+    # Sync files from S3 to volume (in thread to avoid blocking)
     asyncio.create_task(asyncio.to_thread(ctx.initialize))
+    # Start the inactivity offloader
+    asyncio.create_task(ctx.cleanup_loop())
 
 @app.post("/v1/index")
 async def index_image(file: UploadFile = File(...), model: str = "best_model", api_key: str = Depends(get_api_key)):
@@ -328,10 +461,11 @@ async def get_image(filename: str):
 def health():
     return {
         "status": "ready",
-        "models_loaded": list(ctx.bundles.keys()),
+        "models_in_memory": list(ctx.bundles.keys()),
+        "enabled_models": ctx.enabled_models,
         "details": {
-            name: {"ready": b.inference is not None, "count": b.vector_store.index.ntotal if b.vector_store else 0}
-            for name, b in ctx.bundles.items()
+            name: {"loaded": name in ctx.bundles, "count": ctx.bundles[name].vector_store.index.ntotal if name in ctx.bundles and ctx.bundles[name].vector_store else 0}
+            for name in ctx.enabled_models
         }
     }
 

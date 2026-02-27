@@ -8,10 +8,11 @@ ENV PYTHONPATH=/app
 
 WORKDIR /app
 
-# Install minimal system dependencies for OpenCV
+# Install minimal system dependencies for OpenCV and Healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install production requirements
@@ -21,13 +22,17 @@ RUN pip install --no-cache-dir -r requirements-prod.txt
 # Copy only the necessary code
 COPY logo_similarity/ logo_similarity/
 
-# Note: In production/serverless, models and indexes should be 
-# either baked into the image or volume-mounted.
-# Here we create the structure.
-RUN mkdir -p data/ models/ indexes/
+# Ensure directories for volumes exist
+# We use a unified storage directory for Railway volume compatibility
+RUN mkdir -p /app/storage/data /app/storage/models /app/storage/indexes
+VOLUME ["/app/storage"]
+
+# Default to unified storage in production
+ENV PERSISTENT_STORAGE=/app/storage
 
 # Expose FastAPI port
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uvicorn", "logo_similarity.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run with uvicorn (using shell form to expand $PORT for Railway)
+CMD uvicorn logo_similarity.api.app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
+

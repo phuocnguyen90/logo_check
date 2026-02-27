@@ -7,18 +7,28 @@ load_dotenv()
 
 # Base Paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "data"
-MODELS_DIR = BASE_DIR / "models"
-INDEXES_DIR = BASE_DIR / "indexes"
+
+# Support for unified persistent storage (helpful for Railway.app volumes)
+PERSISTENT_ROOT = os.getenv("PERSISTENT_STORAGE")
+if PERSISTENT_ROOT:
+    STORAGE_DIR = Path(PERSISTENT_ROOT)
+    DATA_DIR = STORAGE_DIR / "data"
+    MODELS_DIR = STORAGE_DIR / "models"
+    INDEXES_DIR = STORAGE_DIR / "indexes"
+else:
+    DATA_DIR = BASE_DIR / "data"
+    MODELS_DIR = BASE_DIR / "models"
+    INDEXES_DIR = BASE_DIR / "indexes"
 
 # Dataset Location
 RAW_DATASET_DIR = Path(os.getenv("RAW_DATASET_DIR", DATA_DIR / "raw"))
 DATASET_METADATA = RAW_DATASET_DIR / "results.json"
-TOY_DATASET_METADATA = DATA_DIR / "toy_results.json"  # New toy dataset path
+TOY_DATASET_METADATA = DATA_DIR / "toy_results.json"
+MASTER_METADATA_DB = DATA_DIR / "metadata_v2.db" # <--- Normalized master DB
 
 # Processed Data Paths
 SPLITS_DIR = DATA_DIR / "splits"
-TOY_SPLITS_DIR = DATA_DIR / "toy_splits"  # <--- New
+TOY_SPLITS_DIR = DATA_DIR / "toy_splits"
 VALIDATION_DIR = DATA_DIR / "validation"
 TOY_VALIDATION_DIR = DATA_DIR / "toy_validation" # <--- New
 LOGS_DIR = BASE_DIR / "logs"
