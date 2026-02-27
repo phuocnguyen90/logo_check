@@ -20,6 +20,9 @@ else:
     MODELS_DIR = BASE_DIR / "models"
     INDEXES_DIR = BASE_DIR / "indexes"
 
+from loguru import logger
+logger.info(f"📂 Path Resolution: DATA_DIR={DATA_DIR}, MODELS_DIR={MODELS_DIR}")
+
 # Dataset Location
 RAW_DATASET_DIR = Path(os.getenv("RAW_DATASET_DIR", DATA_DIR / "raw"))
 DATASET_METADATA = RAW_DATASET_DIR / "results.json"
