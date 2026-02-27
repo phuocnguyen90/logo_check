@@ -3,6 +3,11 @@ import onnx
 from onnxconverter_common import float16
 import numpy as np
 
+from pathlib import Path
+import sys
+# Add project root to path
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+
 from logo_similarity.config import paths, settings
 from logo_similarity.utils.logging import logger
 from logo_similarity.embeddings.efficientnet import EfficientNetEmbedder

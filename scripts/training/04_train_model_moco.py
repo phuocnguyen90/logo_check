@@ -7,6 +7,11 @@ import numpy as np
 from tqdm import tqdm
 import json
 
+from pathlib import Path
+import sys
+# Add project root to path
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+
 from logo_similarity.config import settings, paths
 from logo_similarity.utils.logging import logger
 from logo_similarity.embeddings.efficientnet import EfficientNetEmbedder

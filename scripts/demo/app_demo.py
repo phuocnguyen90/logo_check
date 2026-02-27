@@ -19,7 +19,7 @@ import sqlite3
 from typing import Optional, List, Dict, Any
 
 # Add project root to path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from logo_similarity.config import settings, paths
 from logo_similarity.utils.logging import logger
@@ -301,13 +301,13 @@ else:
         from datetime import datetime
         
         log_box = st.empty()
-        project_root = str(Path(__file__).resolve().parent.parent)
+        project_root = str(Path(__file__).resolve().parent.parent.parent)
         env = os.environ.copy()
         env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
         
         cmd = [
             sys.executable,
-            str(Path(__file__).resolve().parent / "03b_fast_index.py"),
+            str(Path(__file__).resolve().parent.parent / "indexing" / "03b_fast_index.py"),
             "--checkpoint", str(paths.CHECKPOINTS_DIR / selected_model),
             "--batch-size", str(build_bs),
             "--workers", str(build_workers)

@@ -18,7 +18,7 @@ echo "=================================================="
 
 # Run Training
 # buffer output to log file
-nohup python -u scripts/06_train_semantic_alignment.py \
+nohup python -u scripts/training/06_train_semantic_alignment.py \
     --epochs ${EPOCHS} \
     --name "${VERSION}" \
     > "${LOG_FILE}" 2>&1 &

@@ -13,7 +13,7 @@ import torch.nn as nn
 
 # Add project root to path
 import sys
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from logo_similarity.config import settings, paths

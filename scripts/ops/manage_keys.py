@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from logo_similarity.config import paths
 
 def hash_key(key: str) -> str:
