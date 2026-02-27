@@ -23,8 +23,12 @@ RUN pip install --no-cache-dir -r requirements-prod.txt
 COPY logo_similarity/ logo_similarity/
 
 # Ensure directories for volumes exist
-RUN mkdir -p data/ models/ indexes/
-VOLUME ["/app/data", "/app/models"]
+# We use a unified storage directory for Railway volume compatibility
+RUN mkdir -p /app/storage/data /app/storage/models /app/storage/indexes
+VOLUME ["/app/storage"]
+
+# Default to unified storage in production
+ENV PERSISTENT_STORAGE=/app/storage
 
 # Expose FastAPI port
 EXPOSE 8000
