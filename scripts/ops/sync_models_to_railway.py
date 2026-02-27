@@ -13,14 +13,13 @@ def sync_models_to_railway():
     load_dotenv()
     
     bucket = os.getenv("RAILWAY_BUCKET_NAME")
-    model_id = "best_model"
-    local_dir = Path("models/onnx") / model_id
+    model_ids = ["best_model", "semantic_v1_semantic_epoch_30"]
     
     if not bucket:
         print("❌ Error: RAILWAY_BUCKET_NAME not set")
         return
 
-    print(f"🚀 Syncing model '{model_id}' to Railway bucket: {bucket}")
+    print(f"🚀 Syncing models to Railway bucket: {bucket}")
     
     # Get list of existing keys to skip (checking specific prefixes to avoid 1000-limit miss)
     existing_keys = set()
@@ -33,7 +32,6 @@ def sync_models_to_railway():
     except Exception as e:
         print(f"⚠️ Could not fetch existing keys: {e}. Will upload all.")
 
-
     files_to_sync = [
         "model.onnx",
         "model.onnx.data",
@@ -43,24 +41,32 @@ def sync_models_to_railway():
         "vps_id_map.json"
     ]
     
-    for filename in files_to_sync:
-        local_path = local_dir / filename
-        s3_key = f"models/{model_id}/{filename}"
+    for model_id in model_ids:
+        print(f"\n📦 Processing model: {model_id}")
+        local_dir = Path("models/onnx") / model_id
         
-        if not local_path.exists():
-            print(f"⚠️ Warning: Local file {local_path} missing, skipping.")
-            continue
-            
-        if s3_key in existing_keys:
-            print(f"⏭️ Skipping {s3_key} (already exists)")
+        if not local_dir.exists():
+            print(f"⚠️ Warning: Local directory {local_dir} missing, skipping model {model_id}.")
             continue
 
-        print(f"📤 Uploading {filename} ({local_path.stat().st_size / 1024 / 1024:.2f} MB)...")
-        success = s3_service.upload_file(str(local_path), bucket, s3_key)
-        if success:
-            print(f"✅ Successfully uploaded to {s3_key}")
-        else:
-            print(f"❌ Failed to upload {filename}")
+        for filename in files_to_sync:
+            local_path = local_dir / filename
+            s3_key = f"models/{model_id}/{filename}"
+            
+            if not local_path.exists():
+                print(f"  ⚠️ Warning: Local file {local_path} missing, skipping.")
+                continue
+                
+            if s3_key in existing_keys:
+                print(f"  ⏭️ Skipping {s3_key} (already exists)")
+                continue
+
+            print(f"  📤 Uploading {filename} ({local_path.stat().st_size / 1024 / 1024:.2f} MB)...")
+            success = s3_service.upload_file(str(local_path), bucket, s3_key)
+            if success:
+                print(f"  ✅ Successfully uploaded to {s3_key}")
+            else:
+                print(f"  ❌ Failed to upload {filename}")
 
     # --- Sync Master DB ---
     master_db = Path("data/metadata_v2.db")
